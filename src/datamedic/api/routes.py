@@ -1,40 +1,56 @@
 import json
 import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from api.schemas import ChatRequest, ChatResponse
+from datamedic.api.schemas import ChatRequest, ChatResponse
 
 router = APIRouter()
 
-sessions: dict = {}
+_agent = None
 
 
-def get_or_create_agent(session_id: str):
-    from agent.agent import create_agent_executor
-
-    if session_id not in sessions:
-        sessions[session_id] = create_agent_executor()
-    return sessions[session_id]
+def get_agent():
+    global _agent
+    if _agent is None:
+        from datamedic.agent.agent import create_agent_graph
+        _agent = create_agent_graph()
+    return _agent
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    agent = get_or_create_agent(request.session_id)
+    agent = get_agent()
 
     try:
-        result = agent.invoke({"input": request.message})
-        output_text = result.get("output", "")
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": request.message}]},
+            config={"configurable": {"thread_id": request.session_id}},
+        )
+
+        messages = result.get("messages", [])
+        output_text = ""
+        for msg in reversed(messages):
+            if hasattr(msg, "type") and msg.type == "ai" and msg.content:
+                output_text = msg.content
+                break
 
         figures = []
-        for step in result.get("intermediate_steps", []):
-            if hasattr(step[0], "tool") and step[0].tool == "visualize_tool":
-                from tools.viz_tool import visualize_metric
-
-                tool_input = step[0].tool_input
-                if isinstance(tool_input, str):
-                    tool_input = json.loads(tool_input)
-                viz_result = visualize_metric(**tool_input)
-                if viz_result.get("figure_json"):
-                    figures.append(json.loads(viz_result["figure_json"]))
+        for msg in messages:
+            if hasattr(msg, "type") and msg.type == "tool" and hasattr(msg, "name"):
+                if msg.name == "visualize_tool":
+                    from datamedic.tools.viz_tool import visualize_metric
+                    try:
+                        tool_call = None
+                        for m in messages:
+                            if hasattr(m, "tool_calls"):
+                                for tc in m.tool_calls:
+                                    if tc.get("name") == "visualize_tool":
+                                        tool_call = tc
+                        if tool_call:
+                            viz_result = visualize_metric(**tool_call["args"])
+                            if viz_result.get("figure_json"):
+                                figures.append(json.loads(viz_result["figure_json"]))
+                    except Exception:
+                        pass
 
         return ChatResponse(text=output_text, figures=figures)
 
@@ -52,7 +68,7 @@ async def websocket_speech(websocket: WebSocket):
     try:
         import dashscope
         from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
-        from config import DASHSCOPE_API_KEY
+        from datamedic.config import DASHSCOPE_API_KEY
 
         dashscope.api_key = DASHSCOPE_API_KEY
 
@@ -111,7 +127,7 @@ async def websocket_tts(websocket: WebSocket):
     try:
         import dashscope
         from dashscope.audio.tts_v2 import SpeechSynthesizer, ResultCallback, AudioFormat
-        from config import DASHSCOPE_API_KEY
+        from datamedic.config import DASHSCOPE_API_KEY
 
         dashscope.api_key = DASHSCOPE_API_KEY
 

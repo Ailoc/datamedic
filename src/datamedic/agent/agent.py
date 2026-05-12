@@ -1,16 +1,14 @@
-import json
+from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain.memory import ConversationSummaryBufferMemory
 from langchain_core.tools import tool
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langgraph.checkpoint.memory import MemorySaver
 
-from config import OPENAI_API_KEY, OPENAI_BASE_URL, MODEL_NAME
-from agent.prompts import build_system_prompt
-from tools.query_tool import query_metric
-from tools.pandas_tool import run_pandas_code
-from tools.viz_tool import visualize_metric
-from tools.causal_tool import analyze_cause
+from datamedic.config import OPENAI_API_KEY, OPENAI_BASE_URL, MODEL_NAME
+from datamedic.agent.prompts import build_system_prompt
+from datamedic.tools.query_tool import query_metric
+from datamedic.tools.pandas_tool import run_pandas_code
+from datamedic.tools.viz_tool import visualize_metric
+from datamedic.tools.causal_tool import analyze_cause
 
 
 @tool
@@ -94,7 +92,10 @@ def causal_analysis_tool(
     )
 
 
-def create_agent_executor() -> AgentExecutor:
+checkpointer = MemorySaver()
+
+
+def create_agent_graph():
     llm = ChatOpenAI(
         model=MODEL_NAME,
         api_key=OPENAI_API_KEY,
@@ -105,27 +106,11 @@ def create_agent_executor() -> AgentExecutor:
     tools = [query_metric_tool, pandas_code_tool, visualize_tool, causal_analysis_tool]
     system_prompt = build_system_prompt()
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
-
-    agent = create_react_agent(llm, tools, prompt)
-
-    memory = ConversationSummaryBufferMemory(
-        llm=llm,
-        max_token_limit=2000,
-        memory_key="chat_history",
-        return_messages=True,
-    )
-
-    return AgentExecutor(
-        agent=agent,
+    agent = create_agent(
+        model=llm,
         tools=tools,
-        memory=memory,
-        max_iterations=10,
-        handle_parsing_errors=True,
-        verbose=False,
+        system_prompt=system_prompt,
+        checkpointer=checkpointer,
     )
+
+    return agent

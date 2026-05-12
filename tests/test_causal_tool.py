@@ -1,12 +1,9 @@
 import pytest
 import json
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def test_analyze_cause_returns_structured_result():
-    from tools.causal_tool import analyze_cause
+    from datamedic.tools.causal_tool import analyze_cause
     result = analyze_cause(
         department="胸外科",
         metric_name="门诊人次",
@@ -21,7 +18,7 @@ def test_analyze_cause_returns_structured_result():
 
 
 def test_analyze_cause_detects_decline():
-    from tools.causal_tool import analyze_cause
+    from datamedic.tools.causal_tool import analyze_cause
     result = analyze_cause(
         department="胸外科",
         metric_name="门诊人次",
@@ -33,7 +30,7 @@ def test_analyze_cause_detects_decline():
 
 
 def test_analyze_cause_includes_drilldown_info():
-    from tools.causal_tool import analyze_cause
+    from datamedic.tools.causal_tool import analyze_cause
     result = analyze_cause(
         department="胸外科",
         metric_name="出院人次",
@@ -45,7 +42,7 @@ def test_analyze_cause_includes_drilldown_info():
 
 
 def test_analyze_cause_unknown_metric():
-    from tools.causal_tool import analyze_cause
+    from datamedic.tools.causal_tool import analyze_cause
     result = analyze_cause(
         department="胸外科",
         metric_name="不存在指标",

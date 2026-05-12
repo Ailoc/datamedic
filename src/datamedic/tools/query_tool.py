@@ -1,5 +1,5 @@
 import pandas as pd
-from data.loader import load_metric_data, get_departments
+from datamedic.data.loader import load_metric_data, get_departments
 
 
 def query_metric(

@@ -1,11 +1,8 @@
 import pytest
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def test_query_single_value():
-    from tools.query_tool import query_metric
+    from datamedic.tools.query_tool import query_metric
     result = query_metric(
         departments=["胸外科"],
         metric_name="门诊人次",
@@ -18,7 +15,7 @@ def test_query_single_value():
 
 
 def test_query_multiple_departments():
-    from tools.query_tool import query_metric
+    from datamedic.tools.query_tool import query_metric
     result = query_metric(
         departments=["心内科", "心外科"],
         metric_name="门诊人次",
@@ -32,7 +29,7 @@ def test_query_multiple_departments():
 
 
 def test_query_with_aggregation_sum():
-    from tools.query_tool import query_metric
+    from datamedic.tools.query_tool import query_metric
     result = query_metric(
         departments=["胸外科"],
         metric_name="门诊人次",
@@ -46,7 +43,7 @@ def test_query_with_aggregation_sum():
 
 
 def test_query_top_n():
-    from tools.query_tool import query_metric
+    from datamedic.tools.query_tool import query_metric
     result = query_metric(
         departments=[],
         metric_name="手术人次",

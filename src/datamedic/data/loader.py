@@ -1,5 +1,5 @@
 import pandas as pd
-from config import METRIC_DATA_PATH
+from datamedic.config import METRIC_DATA_PATH
 
 _df_cache = None
 _departments_cache = None

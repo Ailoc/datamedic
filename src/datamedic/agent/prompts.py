@@ -1,4 +1,4 @@
-from data.loader import get_departments, get_metrics
+from datamedic.data.loader import get_departments, get_metrics
 
 SYSTEM_PROMPT_TEMPLATE = """你是一个医院运营指标智能分析助手。你可以帮助用户查询医院各科室的运营数据、生成可视化图表、分析指标变化的原因。
 

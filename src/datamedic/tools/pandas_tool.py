@@ -1,6 +1,6 @@
 import signal
 import pandas as pd
-from data.loader import load_metric_data
+from datamedic.data.loader import load_metric_data
 
 FORBIDDEN_KEYWORDS = ["import ", "open(", "exec(", "eval(", "__", "os.", "sys.", "subprocess"]
 TIMEOUT_SECONDS = 5

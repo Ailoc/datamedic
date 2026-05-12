@@ -1,6 +1,6 @@
 import networkx as nx
 import pandas as pd
-from config import CAUSAL_RELATIONS_PATH
+from datamedic.config import CAUSAL_RELATIONS_PATH
 
 _graph_cache = None
 

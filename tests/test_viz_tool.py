@@ -1,12 +1,9 @@
 import pytest
 import json
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def test_visualize_line_chart():
-    from tools.viz_tool import visualize_metric
+    from datamedic.tools.viz_tool import visualize_metric
     result = visualize_metric(
         departments=["胸外科"],
         metric_name="门诊人次",
@@ -22,7 +19,7 @@ def test_visualize_line_chart():
 
 
 def test_visualize_bar_chart_multi_dept():
-    from tools.viz_tool import visualize_metric
+    from datamedic.tools.viz_tool import visualize_metric
     result = visualize_metric(
         departments=["心内科", "心外科"],
         metric_name="门诊人次",
@@ -38,7 +35,7 @@ def test_visualize_bar_chart_multi_dept():
 
 
 def test_visualize_returns_summary():
-    from tools.viz_tool import visualize_metric
+    from datamedic.tools.viz_tool import visualize_metric
     result = visualize_metric(
         departments=["胸外科"],
         metric_name="门诊人次",

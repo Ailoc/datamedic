@@ -1,6 +1,6 @@
 import json
-from data.loader import load_metric_data
-from data.causal_graph import build_causal_graph, get_factors, get_drilldown
+from datamedic.data.loader import load_metric_data
+from datamedic.data.causal_graph import build_causal_graph, get_factors, get_drilldown
 
 
 def analyze_cause(department: str, metric_name: str, year: int, month: int) -> str:

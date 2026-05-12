@@ -1,6 +1,6 @@
 import json
 import plotly.graph_objects as go
-from data.loader import load_metric_data
+from datamedic.data.loader import load_metric_data
 
 
 def visualize_metric(
