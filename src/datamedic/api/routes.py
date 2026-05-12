@@ -64,45 +64,42 @@ async def chat(request: ChatRequest):
 @router.websocket("/ws/speech")
 async def websocket_speech(websocket: WebSocket):
     await websocket.accept()
+    recognition = None
 
     try:
         import dashscope
-        from dashscope.audio.asr import Recognition, RecognitionCallback, RecognitionResult
-        from datamedic.config import DASHSCOPE_API_KEY
+        from dashscope.audio.asr import (
+            Recognition,
+            RecognitionCallback,
+            RecognitionResult,
+        )
+        from datamedic.config import DASHSCOPE_API_KEY, STT_MODEL
 
         dashscope.api_key = DASHSCOPE_API_KEY
+        loop = asyncio.get_event_loop()
 
         class MyCallback(RecognitionCallback):
-            def __init__(self, ws):
-                self._ws = ws
-
             def on_event(self, result: RecognitionResult):
                 sentence = result.get_sentence()
                 if sentence:
                     text = sentence.get("text", "")
-                    is_final = sentence.get("end_time", 0) > 0
-                    try:
-                        asyncio.run(self._ws.send_json({
-                            "text": text,
-                            "is_final": is_final,
-                        }))
-                    except Exception:
-                        pass
+                    is_final = RecognitionResult.is_sentence_end(sentence)
+                    asyncio.run_coroutine_threadsafe(
+                        websocket.send_json({"text": text, "is_final": is_final}),
+                        loop,
+                    )
 
             def on_error(self, result: RecognitionResult):
-                try:
-                    asyncio.run(self._ws.send_json({
-                        "error": str(result),
-                    }))
-                except Exception:
-                    pass
+                asyncio.run_coroutine_threadsafe(
+                    websocket.send_json({"error": str(result)}),
+                    loop,
+                )
 
-        callback = MyCallback(websocket)
         recognition = Recognition(
-            model="paraformer-realtime-v2",
+            model=STT_MODEL,
+            callback=MyCallback(),
             format="pcm",
             sample_rate=16000,
-            callback=callback,
         )
         recognition.start()
 
@@ -111,12 +108,13 @@ async def websocket_speech(websocket: WebSocket):
             recognition.send_audio_frame(audio_data)
 
     except WebSocketDisconnect:
-        try:
+        if recognition:
             recognition.stop()
-        except Exception:
-            pass
     except ImportError:
-        await websocket.send_json({"error": "DashScope SDK not configured"})
+        await websocket.send_json({"error": "DashScope ASR SDK not available"})
+        await websocket.close()
+    except Exception as e:
+        await websocket.send_json({"error": f"STT error: {str(e)}"})
         await websocket.close()
 
 
@@ -126,43 +124,44 @@ async def websocket_tts(websocket: WebSocket):
 
     try:
         import dashscope
-        from dashscope.audio.tts_v2 import SpeechSynthesizer, ResultCallback, AudioFormat
-        from datamedic.config import DASHSCOPE_API_KEY
+        from dashscope.audio.tts_v2 import (
+            SpeechSynthesizer,
+            ResultCallback,
+            AudioFormat,
+        )
+        from datamedic.config import DASHSCOPE_API_KEY, TTS_MODEL, TTS_VOICE
 
         dashscope.api_key = DASHSCOPE_API_KEY
+        loop = asyncio.get_event_loop()
 
         class TTSCallback(ResultCallback):
-            def __init__(self, ws):
-                self._ws = ws
+            def on_data(self, data: bytes) -> None:
+                asyncio.run_coroutine_threadsafe(
+                    websocket.send_bytes(data),
+                    loop,
+                )
 
-            def on_data(self, data: bytes):
-                try:
-                    asyncio.run(self._ws.send_bytes(data))
-                except Exception:
-                    pass
+            def on_complete(self) -> None:
+                asyncio.run_coroutine_threadsafe(
+                    websocket.send_json({"status": "complete"}),
+                    loop,
+                )
 
-            def on_complete(self):
-                try:
-                    asyncio.run(self._ws.send_json({"status": "complete"}))
-                except Exception:
-                    pass
-
-            def on_error(self, message: str):
-                try:
-                    asyncio.run(self._ws.send_json({"error": message}))
-                except Exception:
-                    pass
+            def on_error(self, message) -> None:
+                asyncio.run_coroutine_threadsafe(
+                    websocket.send_json({"error": str(message)}),
+                    loop,
+                )
 
         while True:
             message = await websocket.receive_json()
             text = message.get("text", "")
             if text:
-                callback = TTSCallback(websocket)
                 synthesizer = SpeechSynthesizer(
-                    model="cosyvoice-v2",
-                    voice="longxiaochun",
+                    model=TTS_MODEL,
+                    voice=TTS_VOICE,
                     format=AudioFormat.MP3_22050HZ_MONO_256KBPS,
-                    callback=callback,
+                    callback=TTSCallback(),
                 )
                 synthesizer.streaming_call(text)
                 synthesizer.streaming_complete()
@@ -170,5 +169,8 @@ async def websocket_tts(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except ImportError:
-        await websocket.send_json({"error": "DashScope TTS SDK not configured"})
+        await websocket.send_json({"error": "DashScope TTS SDK not available"})
+        await websocket.close()
+    except Exception as e:
+        await websocket.send_json({"error": f"TTS error: {str(e)}"})
         await websocket.close()
