@@ -1,0 +1,74 @@
+<div id="voice-container" style="display:inline-flex;align-items:center;gap:10px;">
+    <button id="mic-btn" onclick="toggleRecording()" style="
+        padding:8px 16px;border-radius:20px;border:2px solid #4a9eff;
+        background:transparent;color:#4a9eff;cursor:pointer;font-size:14px;
+    ">🎤 点击说话</button>
+    <span id="voice-text" style="color:#888;font-size:13px;"></span>
+</div>
+<script>
+let ws = null;
+let isRecording = false;
+let audioContext = null;
+let processor = null;
+let source = null;
+
+async function toggleRecording() {
+    if (isRecording) { stopRecording(); } else { await startRecording(); }
+}
+
+async function startRecording() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { sampleRate: 16000, channelCount: 1 }
+        });
+
+        ws = new WebSocket('ws://localhost:8000/ws/speech');
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.error) {
+                document.getElementById('voice-text').innerText = '错误: ' + data.error;
+                return;
+            }
+            document.getElementById('voice-text').innerText = data.text || '';
+            if (data.is_final && data.text) {
+                window.parent.postMessage({type:'streamlit:setComponentValue', value: data.text}, '*');
+            }
+        };
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        source = audioContext.createMediaStreamSource(stream);
+        processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+        processor.onaudioprocess = (e) => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const float32 = e.inputBuffer.getChannelData(0);
+                const int16 = new Int16Array(float32.length);
+                for (let i = 0; i < float32.length; i++) {
+                    int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
+                }
+                ws.send(int16.buffer);
+            }
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+        isRecording = true;
+        document.getElementById('mic-btn').style.background = '#ff4444';
+        document.getElementById('mic-btn').style.color = '#fff';
+        document.getElementById('mic-btn').innerText = '⏹ 停止录音';
+    } catch(err) {
+        document.getElementById('voice-text').innerText = '麦克风权限被拒绝';
+    }
+}
+
+function stopRecording() {
+    if (processor) { processor.disconnect(); processor = null; }
+    if (source) { source.disconnect(); source = null; }
+    if (audioContext) { audioContext.close(); audioContext = null; }
+    if (ws) { ws.close(); ws = null; }
+    isRecording = false;
+    document.getElementById('mic-btn').style.background = 'transparent';
+    document.getElementById('mic-btn').style.color = '#4a9eff';
+    document.getElementById('mic-btn').innerText = '🎤 点击说话';
+}
+</script>

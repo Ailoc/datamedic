@@ -1,0 +1,79 @@
+<h2>模块 1/6：项目结构与数据层</h2>
+<p class="subtitle">文件组织 + 数据加载与预处理 + 因果关系图构建</p>
+
+<div class="section">
+  <h3>📁 项目结构</h3>
+  <div class="mockup">
+    <div class="mockup-header">目录树</div>
+    <div class="mockup-body" style="padding:16px;font-family:monospace;font-size:12px;color:#ccc;line-height:1.8">
+<span style="color:#4af">vibe_coding_data_analyst/</span>
+├── <span style="color:#fbbf24">app.py</span>                  <span style="color:#666"># Streamlit 主入口</span>
+├── <span style="color:#fbbf24">config.py</span>               <span style="color:#666"># 配置管理 (.env)</span>
+├── <span style="color:#fbbf24">.env</span>                    <span style="color:#666"># API Key, Base URL, Model</span>
+├── <span style="color:#fbbf24">requirements.txt</span>        <span style="color:#666"># 依赖</span>
+│
+├── <span style="color:#4af">data/</span>
+│   ├── <span style="color:#4ade80">loader.py</span>           <span style="color:#666"># 加载CSV/Excel, 预处理</span>
+│   └── <span style="color:#4ade80">causal_graph.py</span>     <span style="color:#666"># NetworkX 因果关系图</span>
+│
+├── <span style="color:#4af">agent/</span>
+│   ├── <span style="color:#4ade80">agent.py</span>            <span style="color:#666"># ReAct Agent 组装</span>
+│   └── <span style="color:#4ade80">prompts.py</span>          <span style="color:#666"># System Prompt 模板</span>
+│
+├── <span style="color:#4af">tools/</span>
+│   ├── <span style="color:#4ade80">query_tool.py</span>       <span style="color:#666"># 预定义数据查询</span>
+│   ├── <span style="color:#4ade80">pandas_tool.py</span>      <span style="color:#666"># 复杂查询(代码生成)</span>
+│   ├── <span style="color:#4ade80">viz_tool.py</span>         <span style="color:#666"># Plotly 可视化</span>
+│   └── <span style="color:#4ade80">causal_tool.py</span>      <span style="color:#666"># 因果分析</span>
+│
+├── <span style="color:#888">metric_data.csv</span>         <span style="color:#666"># 原始数据(已有)</span>
+├── <span style="color:#888">causal_relations.xlsx</span>   <span style="color:#666"># 因果关系(已有)</span>
+└── <span style="color:#888">sample.csv</span>              <span style="color:#666"># 测试用例(已有)</span>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>📊 数据加载 (data/loader.py)</h3>
+  <div style="background:#1a1a2e;padding:16px;border-radius:8px;font-size:12px;color:#ccc;line-height:1.6">
+    <div style="color:#4af;margin-bottom:8px">核心职责：</div>
+    <ul style="margin:0;padding-left:20px">
+      <li><strong>启动时一次性加载</strong> metric_data.csv 到 Pandas DataFrame</li>
+      <li><strong>数据预处理</strong>：添加 <code style="color:#4ade80">date</code> 列 (year-month) 便于时间轴绘图</li>
+      <li><strong>构建元数据</strong>：提取科室列表、指标列表（含编码和单位），供 System Prompt 使用</li>
+      <li>使用 <strong>@st.cache_data</strong> 缓存，避免每次交互重新加载</li>
+    </ul>
+    <div style="color:#4af;margin-top:12px;margin-bottom:8px">数据结构（加载后）：</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <tr style="border-bottom:1px solid #333;color:#888">
+        <td style="padding:4px">科室</td><td style="padding:4px">指标编码</td><td style="padding:4px">指标名称</td>
+        <td style="padding:4px">年份</td><td style="padding:4px">月份</td><td style="padding:4px">数值</td>
+        <td style="padding:4px">指标单位</td><td style="padding:4px;color:#4ade80">date ✨</td>
+      </tr>
+      <tr style="color:#aaa">
+        <td style="padding:4px">胸外科</td><td style="padding:4px">nb_of_outp</td><td style="padding:4px">门诊人次</td>
+        <td style="padding:4px">2025</td><td style="padding:4px">6</td><td style="padding:4px">3968.0</td>
+        <td style="padding:4px">人次</td><td style="padding:4px;color:#4ade80">2025-06</td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<div class="section">
+  <h3>🔗 因果关系图 (data/causal_graph.py)</h3>
+  <div style="background:#1a1a2e;padding:16px;border-radius:8px;font-size:12px;color:#ccc;line-height:1.6">
+    <div style="color:#4af;margin-bottom:8px">核心职责：</div>
+    <ul style="margin:0;padding-left:20px">
+      <li><strong>加载</strong> causal_relations.xlsx 构建 NetworkX 有向图</li>
+      <li><strong>边</strong>：因子指标 → 结果指标 (属性: category=类别)</li>
+      <li><strong>节点</strong>：指标名称 (属性: code=编码)</li>
+      <li>提供 <strong>get_factors(metric_name)</strong> → 返回 {类别: [因子列表]} 字典</li>
+      <li>提供 <strong>get_drilldown(metric_name)</strong> → 查找可下钻的因子（既是因子又是结果指标的）</li>
+    </ul>
+    <div style="color:#fbbf24;margin-top:12px;margin-bottom:8px">多层嵌套处理：</div>
+    <div style="font-size:11px;padding:8px;background:#2a2a1a;border-radius:4px;border:1px solid #554a1a">
+      5个指标既是因子又是结果：门诊人次、门急诊人次、出院人次、出院患者手术人次、每出诊单元门诊人次<br>
+      → get_drilldown() 标识这些指标，在分析结果中提示"可进一步下钻"
+    </div>
+  </div>
+</div>
