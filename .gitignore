@@ -6,7 +6,16 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+frontend/vitest.config.js
+frontend/vitest.config.d.ts
 .venv/
 .pytest_cache/
 .superpowers/
+.datamedic/
 uv.lock
+.env

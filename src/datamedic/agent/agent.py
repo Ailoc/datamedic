@@ -1,3 +1,9 @@
+"""LangGraph Agent 组装模块。
+
+将 LLM、工具集和系统提示词组合为一个带记忆的对话 Agent。
+MemorySaver 提供基于 thread_id 的多会话隔离。
+"""
+
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool

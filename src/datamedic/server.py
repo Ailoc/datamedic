@@ -1,3 +1,8 @@
+"""FastAPI 应用入口，配置 CORS 中间件并挂载路由。
+
+启动方式: uvicorn datamedic.server:app --reload
+"""
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datamedic.api.routes import router

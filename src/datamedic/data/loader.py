@@ -1,3 +1,8 @@
+"""数据加载层，负责读取 CSV 指标数据并提供科室/指标元信息查询。
+
+所有数据在首次访问时加载并缓存于模块级变量中，后续调用直接返回缓存。
+"""
+
 import pandas as pd
 from datamedic.config import METRIC_DATA_PATH
 

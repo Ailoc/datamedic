@@ -1,3 +1,5 @@
+"""指标数据查询工具，支持多科室筛选、时间范围过滤、聚合统计和排名。"""
+
 import pandas as pd
 from datamedic.data.loader import load_metric_data, get_departments
 

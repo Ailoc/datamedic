@@ -1,3 +1,9 @@
+"""沙箱化 Pandas 代码执行工具。
+
+通过关键词黑名单、受限 builtins 和 SIGALRM 超时三重防护，
+允许 LLM 在受控环境中执行用户自定义的数据分析代码。
+"""
+
 import signal
 import pandas as pd
 from datamedic.data.loader import load_metric_data

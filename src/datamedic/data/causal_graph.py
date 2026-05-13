@@ -1,3 +1,9 @@
+"""因果关系图构建与查询。
+
+从 Excel 文件加载指标间的因果关系，构建有向图（因子 → 结果）。
+支持查询某指标的上游因子（按类别分组）以及可下钻的中间指标。
+"""
+
 import networkx as nx
 import pandas as pd
 from datamedic.config import CAUSAL_RELATIONS_PATH
@@ -6,6 +12,7 @@ _graph_cache = None
 
 
 def build_causal_graph() -> nx.DiGraph:
+    """构建并缓存因果关系有向图。边方向: 因子指标 → 结果指标。"""
     global _graph_cache
     if _graph_cache is not None:
         return _graph_cache
@@ -27,6 +34,7 @@ def build_causal_graph() -> nx.DiGraph:
 
 
 def get_factors(G: nx.DiGraph, metric_name: str) -> dict[str, list[str]]:
+    """获取指定指标的所有上游因子，按类别分组返回。"""
     if metric_name not in G:
         return {}
 
@@ -42,6 +50,7 @@ def get_factors(G: nx.DiGraph, metric_name: str) -> dict[str, list[str]]:
 
 
 def get_drilldown(G: nx.DiGraph, metric_name: str) -> list[str]:
+    """找出可进一步下钻的因子（即同时作为其他指标的结果指标的中间节点）。"""
     if metric_name not in G:
         return []
 

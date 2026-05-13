@@ -1,9 +1,16 @@
+"""因果分析工具，对比目标指标及其因子指标的环比变化来解释波动原因。"""
+
 import json
 from datamedic.data.loader import load_metric_data
 from datamedic.data.causal_graph import build_causal_graph, get_factors, get_drilldown
 
 
 def analyze_cause(department: str, metric_name: str, year: int, month: int) -> str:
+    """分析指定科室某月指标变化的原因。
+
+    通过因果图找到上游因子指标，对比当月与上月的值，
+    计算各因子的环比变化率，帮助定位波动根因。
+    """
     G = build_causal_graph()
     factors_by_category = get_factors(G, metric_name)
 

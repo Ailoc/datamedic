@@ -1,3 +1,5 @@
+"""可视化工具，基于 Plotly 生成折线图/柱状图并序列化为 JSON 供前端渲染。"""
+
 import json
 import plotly.graph_objects as go
 from datamedic.data.loader import load_metric_data
