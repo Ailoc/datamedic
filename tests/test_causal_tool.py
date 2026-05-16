@@ -50,3 +50,29 @@ def test_analyze_cause_unknown_metric():
         month=6,
     )
     assert "未找到" in result
+
+
+def test_analyze_cause_rejects_unknown_department():
+    from datamedic.tools.causal_tool import analyze_cause
+
+    result = analyze_cause(
+        department="不存在科室",
+        metric_name="门诊人次",
+        year=2025,
+        month=6,
+    )
+
+    assert "未找到科室" in result
+
+
+def test_analyze_cause_rejects_invalid_month():
+    from datamedic.tools.causal_tool import analyze_cause
+
+    result = analyze_cause(
+        department="胸外科",
+        metric_name="门诊人次",
+        year=2025,
+        month=13,
+    )
+
+    assert "月份必须在1到12之间" in result

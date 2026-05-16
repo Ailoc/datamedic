@@ -54,3 +54,65 @@ def test_query_top_n():
         top_n=3,
     )
     assert "骨科" in result
+
+
+def test_query_top_n_without_explicit_aggregation_labels_period_average():
+    from datamedic.tools.query_tool import query_metric
+
+    result = query_metric(
+        departments=[],
+        metric_name="手术人次",
+        year_start=2024,
+        year_end=2024,
+        sort_by="value_desc",
+        top_n=3,
+    )
+
+    assert "期间平均值" in result
+
+
+def test_query_rejects_invalid_month():
+    from datamedic.tools.query_tool import query_metric
+
+    result = query_metric(["胸外科"], "门诊人次", month_start=0)
+
+    assert "月份必须在1到12之间" in result
+
+
+def test_query_rejects_reversed_period():
+    from datamedic.tools.query_tool import query_metric
+
+    result = query_metric(
+        ["胸外科"],
+        "门诊人次",
+        year_start=2025,
+        month_start=2,
+        year_end=2025,
+        month_end=1,
+    )
+
+    assert "开始时间不能晚于结束时间" in result
+
+
+def test_query_rejects_invalid_aggregation():
+    from datamedic.tools.query_tool import query_metric
+
+    result = query_metric(["胸外科"], "门诊人次", aggregation="median")
+
+    assert "不支持的聚合方式" in result
+
+
+def test_query_rejects_unknown_department():
+    from datamedic.tools.query_tool import query_metric
+
+    result = query_metric(["不存在科室"], "门诊人次")
+
+    assert "未找到科室" in result
+
+
+def test_query_rejects_unknown_metric():
+    from datamedic.tools.query_tool import query_metric
+
+    result = query_metric(["胸外科"], "不存在指标")
+
+    assert "未找到指标" in result

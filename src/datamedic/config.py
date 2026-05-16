@@ -6,6 +6,9 @@ import os
 
 load_dotenv()
 
+# 日志级别
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
 # LLM 配置（兼容 OpenAI 接口的任意服务）
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -22,3 +25,11 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 METRIC_DATA_PATH = DATA_DIR / "metric_data.csv"
 CAUSAL_RELATIONS_PATH = DATA_DIR / "causal_relations.xlsx"
+CONVERSATION_DATA_DIR = Path(os.getenv("CONVERSATION_DATA_DIR", str(DATA_DIR / "conversations")))
+
+DEFAULT_CORS_ALLOW_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
+CORS_ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", DEFAULT_CORS_ALLOW_ORIGINS).split(",")
+    if origin.strip()
+]

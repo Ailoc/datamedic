@@ -15,7 +15,9 @@ frontend/vitest.config.js
 frontend/vitest.config.d.ts
 .venv/
 .pytest_cache/
+.playwright-cli/
 .superpowers/
 .datamedic/
+data/conversations/
 uv.lock
 .env
