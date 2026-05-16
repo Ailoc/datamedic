@@ -1,26 +1,44 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, beforeEach } from "vitest";
+
+const _store = new Map<string, string>();
+
+beforeEach(() => {
+  _store.clear();
+});
 
 afterEach(() => {
   cleanup();
 });
 
-const createStorage = () => {
-  const values = new Map<string, string>();
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => values.set(key, value),
-    removeItem: (key: string) => values.delete(key),
-    clear: () => values.clear(),
-    key: (index: number) => Array.from(values.keys())[index] ?? null,
-    get length() {
-      return values.size;
-    },
-  };
+// Shim localStorage. jsdom 25 disables it for opaque origins even though
+// vitest passes a default URL; the property may already be locked.
+const _localStorage = {
+  getItem: (key: string) => _store.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    _store.set(key, value);
+  },
+  removeItem: (key: string) => {
+    _store.delete(key);
+  },
+  clear: () => {
+    _store.clear();
+  },
+  key: (index: number) => Array.from(_store.keys())[index] ?? null,
+  get length() {
+    return _store.size;
+  },
 };
 
-Object.defineProperty(globalThis, "localStorage", {
-  configurable: true,
-  value: createStorage(),
-});
+try {
+  // Attempt to override the global definition.
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    enumerable: true,
+    get: () => _localStorage,
+  });
+} catch {
+  // Fallback: replace on the window-like global.
+  (globalThis as Record<string, unknown>).localStorage = _localStorage;
+}

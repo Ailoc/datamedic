@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { SpeechPlayer } from "./voice";
+import { SpeechPlayer, SpeechRecognizer } from "./voice";
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
+  static readonly OPEN = 1;
   binaryType = "";
+  onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: (() => void) | null = null;
+  readyState = MockWebSocket.OPEN;
   sent: string[] = [];
   url: string;
 
@@ -15,7 +18,9 @@ class MockWebSocket {
     MockWebSocket.instances.push(this);
   }
 
-  close = vi.fn();
+  close = vi.fn(function (this: MockWebSocket) {
+    this.readyState = 3; // CLOSED
+  });
   send = vi.fn((payload: string) => {
     this.sent.push(payload);
   });
@@ -66,6 +71,8 @@ describe("SpeechPlayer", () => {
     const playing = player.play(" 已完成分析 ");
     const socket = MockWebSocket.instances[0];
     socket.onopen?.();
+    // Wait for synthesize to set up handlers and call send on the persistent socket.
+    await vi.waitFor(() => expect(socket.send).toHaveBeenCalled());
     socket.onmessage?.({ data: new Uint8Array([1, 2, 3]).buffer } as MessageEvent);
     socket.onmessage?.({ data: JSON.stringify({ status: "complete" }) } as MessageEvent);
     await vi.waitFor(() => expect(source.start).toHaveBeenCalled());
@@ -80,7 +87,7 @@ describe("SpeechPlayer", () => {
     expect(source.start).toHaveBeenCalled();
   });
 
-  it("queues speech segments without opening the next websocket until playback finishes", async () => {
+  it("synthesizes queued speech sequentially", async () => {
     MockWebSocket.instances = [];
     const firstSource = createSourceMock();
     const secondSource = createSourceMock();
@@ -96,26 +103,115 @@ describe("SpeechPlayer", () => {
     const first = player.enqueue("第一句。");
     const second = player.enqueue("第二句。");
     await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
-    const firstSocket = MockWebSocket.instances[0];
-    firstSocket.onopen?.();
-    firstSocket.onmessage?.({ data: new Uint8Array([1]).buffer } as MessageEvent);
-    firstSocket.onmessage?.({ data: JSON.stringify({ status: "complete" }) } as MessageEvent);
+    const socket = MockWebSocket.instances[0];
+    socket.onopen?.();
+    // Wait for synthesize to send the first text before delivering messages.
+    await vi.waitFor(() => expect(socket.send).toHaveBeenCalled());
+    socket.onmessage?.({ data: new Uint8Array([1]).buffer } as MessageEvent);
+    socket.onmessage?.({ data: JSON.stringify({ status: "complete" }) } as MessageEvent);
 
-    expect(MockWebSocket.instances).toHaveLength(1);
     await vi.waitFor(() => expect(firstSource.start).toHaveBeenCalled());
+    expect(secondSource.start).not.toHaveBeenCalled();
+    // Socket is reused — no new instance created.
+    expect(MockWebSocket.instances).toHaveLength(1);
+
     firstSource.onended?.();
     await first;
 
-    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
-    const secondSocket = MockWebSocket.instances[1];
-    secondSocket.onopen?.();
-    secondSocket.onmessage?.({ data: new Uint8Array([2]).buffer } as MessageEvent);
-    secondSocket.onmessage?.({ data: JSON.stringify({ status: "complete" }) } as MessageEvent);
+    // Second synthesis reuses the same persistent socket.
+    socket.onmessage?.({ data: new Uint8Array([2]).buffer } as MessageEvent);
+    socket.onmessage?.({ data: JSON.stringify({ status: "complete" }) } as MessageEvent);
+
     await vi.waitFor(() => expect(secondSource.start).toHaveBeenCalled());
     secondSource.onended?.();
     await second;
 
-    expect(firstSocket.send).toHaveBeenCalledWith(JSON.stringify({ text: "第一句。" }));
-    expect(secondSocket.send).toHaveBeenCalledWith(JSON.stringify({ text: "第二句。" }));
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ text: "第一句。" }));
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ text: "第二句。" }));
+  });
+
+  it("closes the active synthesis websocket when playback is stopped before completion", async () => {
+    MockWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    vi.stubGlobal("AudioContext", vi.fn(() => createAudioContextMock()));
+
+    const player = new SpeechPlayer();
+    const playing = player.play("正在合成的长句。");
+    const socket = MockWebSocket.instances[0];
+    socket.onopen?.();
+
+    player.stop();
+    await playing;
+
+    expect(socket.close).toHaveBeenCalled();
+  });
+
+  it("closes active synthesis websocket and resolves pending queued playback when stopped", async () => {
+    MockWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    vi.stubGlobal("AudioContext", vi.fn(() => createAudioContextMock()));
+
+    const player = new SpeechPlayer();
+    const first = player.enqueue("第一句。");
+    const second = player.enqueue("第二句。");
+    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+    const socket = MockWebSocket.instances[0];
+    socket.onopen?.();
+
+    player.stop();
+    await Promise.all([first, second]);
+
+    expect(socket.close).toHaveBeenCalled();
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it("rejects malformed TTS control frames instead of leaving playback pending", async () => {
+    MockWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    vi.stubGlobal("AudioContext", vi.fn(() => createAudioContextMock()));
+
+    const player = new SpeechPlayer();
+    const playing = player.play("异常响应测试");
+    const socket = MockWebSocket.instances[0];
+    socket.onopen?.();
+    // Wait for synthesize to set up handlers before sending malformed data.
+    await vi.waitFor(() => expect(socket.send).toHaveBeenCalled());
+    expect(() => socket.onmessage?.({ data: "{broken-json" } as MessageEvent)).not.toThrow();
+    await expect(playing).rejects.toThrow("语音输出响应格式异常");
+  });
+});
+
+describe("SpeechRecognizer", () => {
+  it("stops media and socket resources when speech websocket errors", async () => {
+    MockWebSocket.instances = [];
+    const track = { stop: vi.fn() };
+    const processor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
+    const source = { connect: vi.fn(), disconnect: vi.fn() };
+    const audioContext = {
+      close: vi.fn(() => Promise.resolve()),
+      createMediaStreamSource: vi.fn(() => source),
+      createScriptProcessor: vi.fn(() => processor),
+      destination: {},
+    };
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    vi.stubGlobal("AudioContext", vi.fn(() => audioContext));
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        getUserMedia: vi.fn(() => Promise.resolve({ getTracks: () => [track] })),
+      },
+    });
+    const onError = vi.fn();
+    const recognizer = new SpeechRecognizer({ onError, onText: vi.fn() });
+
+    await recognizer.start();
+    const socket = MockWebSocket.instances[0];
+    socket.onerror?.();
+
+    expect(onError).toHaveBeenCalledWith("语音连接失败");
+    expect(socket.close).toHaveBeenCalled();
+    expect(processor.disconnect).toHaveBeenCalled();
+    expect(source.disconnect).toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalled();
+    expect(audioContext.close).toHaveBeenCalled();
   });
 });

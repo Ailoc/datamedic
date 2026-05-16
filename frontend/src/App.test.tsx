@@ -9,22 +9,52 @@ type MockSpeechCallbacks = {
   onText: (text: string, isFinal: boolean) => void;
 };
 
-const { plotlyReactMock, speechPlayerMock, speechRecognizerMock, streamChatMessageMock } = vi.hoisted(
-  () => ({
-    plotlyReactMock: vi.fn(() => Promise.resolve()),
-    speechPlayerMock: vi.fn(),
-    speechRecognizerMock: vi.fn(),
-    streamChatMessageMock: vi.fn(),
-  }),
+const {
+  createBackendSessionMock,
+  deleteBackendSessionMock,
+  fetchSessionsMock,
+  loadPlotlyMock,
+  plotlyPurgeMock,
+  plotlyReactMock,
+  speechPlayerMock,
+  speechRecognizerMock,
+  streamChatMessageMock,
+} = vi.hoisted(
+  () => {
+    const plotlyReact = vi.fn(() => Promise.resolve());
+    const plotlyPurge = vi.fn();
+    return {
+      createBackendSessionMock: vi.fn(),
+      deleteBackendSessionMock: vi.fn(),
+      fetchSessionsMock: vi.fn(),
+      loadPlotlyMock: vi.fn(() =>
+        Promise.resolve({
+          purge: plotlyPurge,
+          react: plotlyReact,
+        }),
+      ),
+      plotlyPurgeMock: plotlyPurge,
+      plotlyReactMock: plotlyReact,
+      speechPlayerMock: vi.fn(),
+      speechRecognizerMock: vi.fn(),
+      streamChatMessageMock: vi.fn(),
+    };
+  },
 );
 
 vi.mock("./api", () => ({
+  BACKEND_CONNECTION_ERROR: "无法连接到后端服务，请确认 FastAPI 已启动。",
+  isNonEmptyDelta: (accumulated: string, delta: string) => accumulated.trim() || delta.trim(),
+  createBackendSession: createBackendSessionMock,
+  deleteBackendSession: deleteBackendSessionMock,
+  fetchSessions: fetchSessionsMock,
   streamChatMessage: streamChatMessageMock,
 }));
 
-vi.mock("plotly.js-dist-min", () => ({
+vi.mock("./plotly", () => ({
+  loadPlotly: loadPlotlyMock,
   default: {
-    purge: vi.fn(),
+    purge: plotlyPurgeMock,
     react: plotlyReactMock,
   },
 }));
@@ -37,6 +67,21 @@ vi.mock("./voice", () => ({
 describe("DataMedic app shell", () => {
   beforeEach(() => {
     localStorage.clear();
+    fetchSessionsMock.mockReset();
+    fetchSessionsMock.mockRejectedValue(new Error("offline"));
+    createBackendSessionMock.mockReset();
+    createBackendSessionMock.mockResolvedValue({
+      id: "backend-new",
+      title: "新的运营问答",
+      summary: "还没有消息",
+      createdAt: "2026-05-15T00:00:00.000Z",
+      updatedAt: "2026-05-15T00:00:00.000Z",
+      messages: [],
+    });
+    deleteBackendSessionMock.mockReset();
+    deleteBackendSessionMock.mockResolvedValue(undefined);
+    loadPlotlyMock.mockClear();
+    plotlyPurgeMock.mockClear();
     plotlyReactMock.mockClear();
     speechPlayerMock.mockReset();
     speechPlayerMock.mockImplementation(() => ({
@@ -70,11 +115,41 @@ describe("DataMedic app shell", () => {
     expect(screen.getByRole("textbox", { name: "消息输入" })).toBeInTheDocument();
   });
 
+  it("hydrates conversations from the backend when sessions are available", async () => {
+    fetchSessionsMock.mockResolvedValueOnce([
+      {
+        id: "backend-1",
+        title: "后端会话",
+        summary: "已恢复",
+        createdAt: "2026-05-15T00:00:00.000Z",
+        updatedAt: "2026-05-15T00:00:00.000Z",
+        messages: [
+          {
+            id: "message-1",
+            role: "assistant",
+            text: "历史回答",
+            figures: [{ data: [{ type: "bar" }], layout: { title: "历史图表" } }],
+            createdAt: "2026-05-15T00:00:00.000Z",
+          },
+        ],
+      },
+    ]);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "后端会话" })).toBeInTheDocument();
+    expect(screen.getByText("历史回答")).toBeInTheDocument();
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+    expect(saved.activeId).toBe("backend-1");
+    expect(saved.conversations[0].messages[0].figures).toHaveLength(1);
+  });
+
   it("creates conversations and requires confirmation before deleting one", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "新建会话" }));
+    await waitFor(() => expect(createBackendSessionMock).toHaveBeenCalled());
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
     expect(saved.conversations).toHaveLength(2);
 
@@ -91,6 +166,7 @@ describe("DataMedic app shell", () => {
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").conversations).toHaveLength(2);
 
     await user.click(within(firstSession).getByRole("button", { name: /确认删除/ }));
+    await waitFor(() => expect(deleteBackendSessionMock).toHaveBeenCalled());
 
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").conversations).toHaveLength(1);
   });
@@ -133,6 +209,26 @@ describe("DataMedic app shell", () => {
     });
 
     expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("分析 门诊趋势");
+  });
+
+  it("stops voice recognition resources when recognition reports an error", async () => {
+    const user = userEvent.setup();
+    const stopMock = vi.fn();
+    speechRecognizerMock.mockImplementation(() => ({
+      start: vi.fn(() => Promise.resolve()),
+      stop: stopMock,
+    }));
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "语音输入" }));
+    const callbacks = speechRecognizerMock.mock.calls[0][0] as MockSpeechCallbacks;
+    act(() => {
+      callbacks.onError("语音连接失败");
+    });
+
+    expect(stopMock).toHaveBeenCalled();
+    expect(screen.getByText("语音连接失败")).toBeInTheDocument();
   });
 
   it("queues completed assistant replies only when voice output is enabled", async () => {
@@ -198,6 +294,45 @@ describe("DataMedic app shell", () => {
     resolveStream({ ok: true, text: "第一句。第二句", figures: [] });
   });
 
+  it("stops queued speech when the stream finishes with an error", async () => {
+    const user = userEvent.setup();
+    const enqueueMock = vi.fn(() => Promise.resolve());
+    const stopMock = vi.fn();
+    let resolveStream: (
+      value: { ok: boolean; text: string; figures: never[] },
+    ) => void = () => undefined;
+    speechPlayerMock.mockImplementation(() => ({
+      destroy: vi.fn(),
+      enqueue: enqueueMock,
+      unlock: vi.fn(() => Promise.resolve()),
+      play: vi.fn(() => Promise.resolve()),
+      stop: stopMock,
+    }));
+    streamChatMessageMock.mockImplementationOnce(
+      async (_sessionId: string, _message: string, options = {}) => {
+        const callbacks = options as { onDelta?: (text: string) => void };
+        callbacks.onDelta?.("第一句。");
+        return new Promise((resolve) => {
+          resolveStream = resolve;
+        });
+      },
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "开启语音输出" }));
+    await user.type(screen.getByRole("textbox", { name: "消息输入" }), "继续分析");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(enqueueMock).toHaveBeenCalledWith("第一句。"));
+    stopMock.mockClear();
+
+    await act(async () => {
+      resolveStream({ ok: false, text: "模型服务异常", figures: [] });
+    });
+
+    expect(stopMock).toHaveBeenCalled();
+  });
+
   it("updates the assistant message from streamed deltas", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -209,6 +344,98 @@ describe("DataMedic app shell", () => {
     expect(await within(thread).findByText("已完成分析")).toBeInTheDocument();
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
     expect(saved.conversations[0].messages.at(-1).text).toBe("已完成分析");
+  });
+
+  it("does not render a blank assistant bubble while only whitespace has streamed", async () => {
+    const user = userEvent.setup();
+    let resolveStream: (
+      value: { ok: boolean; text: string; figures: never[] },
+    ) => void = () => undefined;
+    streamChatMessageMock.mockImplementationOnce(
+      async (_sessionId: string, _message: string, options = {}) => {
+        const callbacks = options as { onDelta?: (text: string) => void };
+        callbacks.onDelta?.("   ");
+        return new Promise((resolve) => {
+          resolveStream = resolve;
+        });
+      },
+    );
+
+    const { container } = render(<App />);
+
+    await user.type(screen.getByRole("textbox", { name: "消息输入" }), "分析门诊趋势");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+
+    const thread = screen.getByRole("region", { name: "对话内容" });
+    await within(thread).findByText("正在分析");
+    expect(container.querySelector(".message-list .message.assistant")).toBeNull();
+
+    await act(async () => {
+      resolveStream({ ok: true, text: "分析完成", figures: [] });
+    });
+
+    expect(await within(thread).findByText("分析完成")).toBeInTheDocument();
+  });
+
+  it("shows the assistant avatar while the model is thinking", async () => {
+    const user = userEvent.setup();
+    let resolveStream: (
+      value: { ok: boolean; text: string; figures: never[] },
+    ) => void = () => undefined;
+    streamChatMessageMock.mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          resolveStream = resolve;
+        }),
+    );
+
+    const { container } = render(<App />);
+
+    await user.type(screen.getByRole("textbox", { name: "消息输入" }), "分析门诊趋势");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+
+    const thinkingMessage = container.querySelector(".thinking-message");
+    expect(thinkingMessage).not.toBeNull();
+    expect(thinkingMessage?.querySelector(".avatar svg")).not.toBeNull();
+    expect(within(screen.getByRole("region", { name: "对话内容" })).getByText("正在分析")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveStream({ ok: true, text: "分析完成", figures: [] });
+    });
+  });
+
+  it("keeps conversations created while a stream is still pending", async () => {
+    const user = userEvent.setup();
+    let resolveStream: (
+      value: { ok: boolean; text: string; figures: never[] },
+    ) => void = () => undefined;
+    streamChatMessageMock.mockImplementationOnce(
+      async (_sessionId: string, _message: string, options = {}) => {
+        const callbacks = options as { onDelta?: (text: string) => void };
+        callbacks.onDelta?.("处理中");
+        return new Promise((resolve) => {
+          resolveStream = resolve;
+        });
+      },
+    );
+
+    render(<App />);
+
+    await user.type(screen.getByRole("textbox", { name: "消息输入" }), "分析门诊趋势");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await within(screen.getByRole("region", { name: "对话内容" })).findByText("处理中");
+
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").conversations).toHaveLength(2);
+
+    await act(async () => {
+      resolveStream({ ok: true, text: "处理完成", figures: [] });
+    });
+
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+    expect(saved.conversations).toHaveLength(2);
+    expect(saved.activeId).toBe(saved.conversations[0].id);
+    expect(saved.conversations[1].messages.at(-1).text).toBe("处理完成");
   });
 
   it("renders Plotly figures with an immersive transparent theme", async () => {
@@ -247,6 +474,7 @@ describe("DataMedic app shell", () => {
     await user.click(screen.getByRole("button", { name: "发送消息" }));
 
     await waitFor(() => expect(plotlyReactMock).toHaveBeenCalled());
+    expect(loadPlotlyMock).toHaveBeenCalledOnce();
     const [, data, layout, config] = plotlyReactMock.mock.calls[0];
     const tableTrace = (data as Array<Record<string, unknown>>)[1] as {
       cells: { fill: { color: string }; font: { color: string } };
@@ -265,5 +493,35 @@ describe("DataMedic app shell", () => {
       displayModeBar: false,
       responsive: true,
     });
+  });
+
+  it("purges Plotly figures when chart panels unmount", async () => {
+    const user = userEvent.setup();
+    streamChatMessageMock.mockImplementationOnce(
+      async (_sessionId: string, _message: string, options = {}) => {
+        const callbacks = options as { onDelta?: (text: string) => void };
+        callbacks.onDelta?.("已生成");
+        return {
+          ok: true,
+          text: "已生成图表",
+          figures: [
+            {
+              data: [{ type: "scatter", name: "趋势" }],
+              layout: { title: "运营指标" },
+            },
+          ],
+        };
+      },
+    );
+
+    const { unmount } = render(<App />);
+
+    await user.type(screen.getByRole("textbox", { name: "消息输入" }), "展示趋势");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(plotlyReactMock).toHaveBeenCalled());
+
+    unmount();
+
+    await waitFor(() => expect(plotlyPurgeMock).toHaveBeenCalled());
   });
 });

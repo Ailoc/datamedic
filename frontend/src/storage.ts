@@ -5,7 +5,7 @@
  * 每次写操作都会同步持久化，页面刷新后自动恢复。
  */
 
-import type { ChatMessage, Conversation, ConversationState, PlotlyFigure, Role } from "./types";
+import { isRecord, type ChatMessage, type Conversation, type ConversationState, type PlotlyFigure, type Role } from "./types";
 
 export const STORAGE_KEY = "datamedic.conversations.v1";
 
@@ -26,6 +26,46 @@ const createId = () => {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
+const stringOr = (value: unknown, fallback: string, allowBlank = false) => {
+  if (typeof value !== "string") return fallback;
+  if (!allowBlank && !value.trim()) return fallback;
+  return value;
+};
+
+const dateOr = (value: unknown, fallback: string) => {
+  if (typeof value !== "string") return fallback;
+  return Number.isNaN(new Date(value).getTime()) ? fallback : value;
+};
+
+const normalizeFigures = (value: unknown): PlotlyFigure[] => {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord);
+};
+
+const normalizeMessage = (value: unknown): ChatMessage | null => {
+  if (!isRecord(value)) return null;
+  if (value.role !== "user" && value.role !== "assistant") return null;
+  const text = stringOr(value.text, "", true);
+  if (value.role === "assistant" && isStaleBackendErrorMessage(text)) return null;
+  return {
+    id: stringOr(value.id, createId()),
+    role: value.role,
+    text,
+    figures: normalizeFigures(value.figures),
+    createdAt: dateOr(value.createdAt, nowIso()),
+  };
+};
+
+const isStaleBackendErrorMessage = (text: string): boolean => {
+  const markers = [
+    "Recursion limit of 25 reached",
+    "GRAPH_RECURSION_LIMIT",
+    "LangGraph",
+    "docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT",
+  ];
+  return markers.some((marker) => text.includes(marker));
+};
+
 const createEmptyConversation = (): Conversation => {
   const now = nowIso();
   return {
@@ -38,14 +78,36 @@ const createEmptyConversation = (): Conversation => {
   };
 };
 
+const normalizeConversation = (value: unknown): Conversation | null => {
+  if (!isRecord(value)) return null;
+  const createdAt = dateOr(value.createdAt, nowIso());
+  const messages = Array.isArray(value.messages)
+    ? value.messages
+        .map(normalizeMessage)
+        .filter((message): message is ChatMessage => Boolean(message))
+    : [];
+  const fallbackSummary = messages.at(-1)?.text || "还没有消息";
+  const rawSummary = stringOr(value.summary, fallbackSummary);
+  return {
+    id: stringOr(value.id, createId()),
+    title: stringOr(value.title, DEFAULT_TITLE),
+    summary: isStaleBackendErrorMessage(rawSummary) ? fallbackSummary : rawSummary,
+    createdAt,
+    updatedAt: dateOr(value.updatedAt, createdAt),
+    messages,
+  };
+};
+
 const normalize = (value: unknown): ConversationState => {
-  if (!value || typeof value !== "object") {
+  if (!isRecord(value)) {
     const conversation = createEmptyConversation();
     return { activeId: conversation.id, conversations: [conversation] };
   }
   const candidate = value as Partial<ConversationState>;
   const conversations = Array.isArray(candidate.conversations)
-    ? candidate.conversations.filter(Boolean)
+    ? candidate.conversations
+        .map(normalizeConversation)
+        .filter((conversation): conversation is Conversation => Boolean(conversation))
     : [];
   if (conversations.length === 0) {
     const conversation = createEmptyConversation();
@@ -60,16 +122,20 @@ const normalize = (value: unknown): ConversationState => {
 };
 
 export const saveConversationState = (state: ConversationState): ConversationState => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    return state;
+  }
   return state;
 };
 
 export const loadConversationState = (): ConversationState => {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return saveConversationState(normalize(null));
-  }
   try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return saveConversationState(normalize(null));
+    }
     return saveConversationState(normalize(JSON.parse(raw)));
   } catch {
     return saveConversationState(normalize(null));
