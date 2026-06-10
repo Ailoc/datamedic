@@ -632,7 +632,7 @@ sequenceDiagram
 
     Note over Hook: 流式 delta 事件到达
     Hook->>Seg: extractSpeakableSegments(delta)
-    Note over Seg: 断句策略：<br/>强断句：。！？!?；; → 立即断<br/>弱断句：，,、：: → ≥22字符后断
+    Note over Seg: 按强标点和弱标点断句，详见下方表格
 
     Seg-->>Hook: segments[] + remaining
     loop 每个可朗读片段
