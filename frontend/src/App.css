@@ -85,31 +85,15 @@ textarea:focus-visible {
 }
 
 .brand-mark {
-  position: relative;
   display: grid;
   width: 42px;
   height: 42px;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  border-radius: 12px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 48%),
-    linear-gradient(135deg, var(--sage), #173c37);
-  color: #fffaf1;
-  box-shadow: 0 14px 28px rgba(34, 79, 73, 0.23);
 }
 
-.brand-mark::after {
-  content: "";
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  width: 8px;
-  height: 8px;
-  border: 2px solid #fbf4e8;
-  border-radius: 50%;
-  background: #c8ded7;
+.brand-mark img {
+  display: block;
 }
 
 .brand-copy {

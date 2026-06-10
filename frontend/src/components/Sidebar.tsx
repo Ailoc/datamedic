@@ -1,4 +1,4 @@
-import { Activity, MessageCircle, Plus, Trash2 } from "lucide-react";
+import { MessageCircle, Plus, Trash2 } from "lucide-react";
 
 import { formatDisplayTime } from "../format";
 import type { Conversation } from "../types";
@@ -24,7 +24,7 @@ export function Sidebar({
     <aside className="sidebar" aria-label="会话侧边栏">
       <div className="brand">
         <div className="brand-mark" aria-hidden="true">
-          <Activity size={22} strokeWidth={2.4} />
+          <img src="/logo3.png" alt="" width={38} height={38} />
         </div>
         <div className="brand-copy">
           <strong>DataMedic</strong>

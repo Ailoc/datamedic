@@ -1,5 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="16" fill="#2f756a"/>
-  <path d="M18 35h8l5-12 7 24 5-12h5" fill="none" stroke="#fff8ec" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="48" cy="48" r="5" fill="#c8ded7"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Hexagonal badge -->
+  <path d="M32 8L52 16V48L32 56L12 48V16L32 8Z" fill="#2f756a"/>
+  <!-- Data pulse line -->
+  <path d="M20 36L26 28L32 40L38 24L44 32"
+    stroke="#ffffff"
+    stroke-width="3"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    fill="none"/>
 </svg>
