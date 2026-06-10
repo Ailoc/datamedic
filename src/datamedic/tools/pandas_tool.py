@@ -1,15 +1,12 @@
 """沙箱化 Pandas 代码执行工具。
 
-通过 AST 校验、受限 builtins 和主线程 SIGALRM 超时防护，
+通过 AST 校验、受限 builtins 和进程池超时防护，
 允许 LLM 在受控环境中执行受限的数据分析代码。
 """
 
 import ast
 import logging
-import signal
-import threading
-import pandas as pd
-from datamedic.data.loader import load_metric_data
+from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +80,6 @@ SAFE_BUILTINS = {
 }
 
 
-class CodeTimeoutError(Exception):
-    pass
-
-
 class PandasCodeValidator(ast.NodeVisitor):
     """拒绝不需要的 Python 结构和明显危险的调用。"""
 
@@ -119,10 +112,6 @@ class PandasCodeValidator(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _timeout_handler(signum, frame):
-    raise CodeTimeoutError("代码执行超时")
-
-
 def _validate_code(code: str) -> str | None:
     try:
         tree = ast.parse(code, mode="exec")
@@ -136,12 +125,17 @@ def _validate_code(code: str) -> str | None:
     return None
 
 
-def _can_use_signal_alarm() -> bool:
-    return (
-        threading.current_thread() is threading.main_thread()
-        and hasattr(signal, "SIGALRM")
-        and hasattr(signal, "alarm")
-    )
+def _exec_in_subprocess(code: str) -> str:
+    """Execute validated Pandas code in a subprocess with its own data copy."""
+    from datamedic.data.loader import load_metric_data as _load
+    import pandas as _pd
+
+    df = _load().copy()
+    local_vars = {"df": df, "pd": _pd}
+    exec(code, {"__builtins__": SAFE_BUILTINS}, local_vars)
+    if "result" in local_vars:
+        return str(local_vars["result"])
+    return "代码执行完成，但未设置 result 变量。请将最终结果赋值给 result。"
 
 
 def run_pandas_code(code: str) -> str:
@@ -151,29 +145,19 @@ def run_pandas_code(code: str) -> str:
         logger.warning("Pandas code rejected: %s", validation_error)
         return validation_error
 
-    df = load_metric_data().copy()
-    local_vars = {"df": df, "pd": pd}
-
-    use_alarm = _can_use_signal_alarm()
-    old_handler = None
-    if use_alarm:
-        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(TIMEOUT_SECONDS)
-
+    executor = ProcessPoolExecutor(max_workers=1)
     try:
-        exec(code, {"__builtins__": SAFE_BUILTINS}, local_vars)
-    except CodeTimeoutError:
-        logger.warning("Pandas code execution timed out (%ds)", TIMEOUT_SECONDS)
-        return "错误：代码执行超时（超过5秒），请简化查询逻辑。"
+        future = executor.submit(_exec_in_subprocess, code)
+        try:
+            result = future.result(timeout=TIMEOUT_SECONDS)
+            logger.debug("Pandas code executed successfully, result_length=%d", len(str(result)))
+            return result
+        except FuturesTimeout:
+            future.cancel()
+            logger.warning("Pandas code execution timed out (%ds)", TIMEOUT_SECONDS)
+            return "错误：代码执行超时（超过5秒），请简化查询逻辑。"
     except Exception as e:
         logger.warning("Pandas code execution failed: %s", e, exc_info=True)
         return f"代码执行错误：{type(e).__name__}: {str(e)}"
     finally:
-        if use_alarm:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-
-    if "result" in local_vars:
-        logger.debug("Pandas code executed successfully, result_length=%d", len(str(local_vars["result"])))
-        return str(local_vars["result"])
-    return "代码执行完成，但未设置 result 变量。请将最终结果赋值给 result。"
+        executor.shutdown(wait=False, cancel_futures=True)

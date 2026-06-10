@@ -35,6 +35,12 @@ export const fetchSessions = async (): Promise<Conversation[]> => {
   return Array.isArray(payload) ? (payload as Conversation[]) : [];
 };
 
+export const fetchSession = async (sessionId: string): Promise<Conversation> => {
+  const response = await fetch(`/sessions/${encodeURIComponent(sessionId)}`);
+  ensureOk(response, "加载会话详情失败");
+  return (await response.json()) as Conversation;
+};
+
 export const createBackendSession = async (): Promise<Conversation> => {
   const response = await fetch("/sessions", { method: "POST" });
   ensureOk(response, "创建后端会话失败");

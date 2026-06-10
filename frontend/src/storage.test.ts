@@ -1,70 +1,151 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   appendMessage,
   createConversation,
+  createInitialState,
   deleteConversation,
-  loadConversationState,
-  STORAGE_KEY,
+  getActiveConversation,
+  setActiveConversation,
   updateMessage,
 } from "./storage";
+import type { Conversation } from "./types";
 
-describe("conversation storage", () => {
-  beforeEach(() => {
-    localStorage.clear();
+const makeConversation = (overrides: Partial<Conversation> = {}): Conversation => ({
+  id: "session-1",
+  title: "测试会话",
+  summary: "测试摘要",
+  createdAt: "2026-05-15T00:00:00.000Z",
+  updatedAt: "2026-05-15T00:00:00.000Z",
+  messages: [],
+  ...overrides,
+});
+
+describe("createInitialState", () => {
+  it("builds state from backend conversations", () => {
+    const conversations = [
+      makeConversation({ id: "s1", title: "第一个" }),
+      makeConversation({ id: "s2", title: "第二个" }),
+    ];
+    const state = createInitialState(conversations);
+    expect(state.activeId).toBe("s1");
+    expect(state.conversations).toHaveLength(2);
   });
 
-  it("creates a default active conversation", () => {
-    const state = loadConversationState();
-
+  it("creates a default empty conversation when list is empty", () => {
+    const state = createInitialState([]);
     expect(state.activeId).toBeTruthy();
     expect(state.conversations).toHaveLength(1);
     expect(state.conversations[0].title).toBe("新的运营问答");
   });
+});
 
-  it("creates new conversations at the top and persists them", () => {
-    const state = loadConversationState();
-    const firstId = state.activeId;
+describe("createConversation", () => {
+  it("adds a new conversation at the top and sets it active", () => {
+    const state = createInitialState([makeConversation({ id: "existing" })]);
     const next = createConversation(state);
-
-    expect(next.activeId).not.toBe(firstId);
+    expect(next.activeId).not.toBe("existing");
     expect(next.conversations[0].id).toBe(next.activeId);
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").activeId).toBe(next.activeId);
+    expect(next.conversations).toHaveLength(2);
+  });
+});
+
+describe("setActiveConversation", () => {
+  it("switches the active conversation", () => {
+    const state = createInitialState([
+      makeConversation({ id: "s1" }),
+      makeConversation({ id: "s2" }),
+    ]);
+    const next = setActiveConversation(state, "s2");
+    expect(next.activeId).toBe("s2");
   });
 
-  it("generates a title from the first user message", () => {
-    const state = loadConversationState();
-    const next = appendMessage(state, state.activeId, {
+  it("returns unchanged state when conversationId does not exist", () => {
+    const state = createInitialState([makeConversation({ id: "s1" })]);
+    const next = setActiveConversation(state, "nonexistent");
+    expect(next).toBe(state);
+  });
+});
+
+describe("deleteConversation", () => {
+  it("removes the conversation and switches to the remaining one", () => {
+    const state = createInitialState([
+      makeConversation({ id: "s1" }),
+      makeConversation({ id: "s2" }),
+    ]);
+    const next = deleteConversation(state, "s1");
+    expect(next.conversations).toHaveLength(1);
+    expect(next.conversations[0].id).toBe("s2");
+    expect(next.activeId).toBe("s2");
+  });
+
+  it("creates a replacement when deleting the last conversation", () => {
+    const state = createInitialState([makeConversation({ id: "only" })]);
+    const next = deleteConversation(state, "only");
+    expect(next.conversations).toHaveLength(1);
+    expect(next.activeId).not.toBe("only");
+    expect(next.conversations[0].title).toBe("新的运营问答");
+  });
+
+  it("preserves activeId when deleting a non-active conversation", () => {
+    const state = createInitialState([
+      makeConversation({ id: "s1" }),
+      makeConversation({ id: "s2" }),
+    ]);
+    const next = deleteConversation(state, "s2");
+    expect(next.activeId).toBe("s1");
+    expect(next.conversations).toHaveLength(1);
+  });
+});
+
+describe("appendMessage", () => {
+  it("appends a user message and updates title from first user message", () => {
+    const state = createInitialState([
+      makeConversation({ id: "s1", title: "\u65b0\u7684\u8fd0\u8425\u95ee\u7b54" }),
+    ]);
+    const next = appendMessage(state, "s1", {
       role: "user",
       text: "展示2025年骨科出院人次趋势并分析变化",
-      figures: [],
     });
-
     expect(next.conversations[0].title).toBe("展示2025年骨科出院人次趋势...");
     expect(next.conversations[0].summary).toBe("展示2025年骨科出院人次趋势并分析变化");
+    expect(next.conversations[0].messages).toHaveLength(1);
+    expect(next.conversations[0].messages[0].role).toBe("user");
   });
 
-  it("deleting the active final conversation creates a replacement", () => {
-    const state = loadConversationState();
-    const next = deleteConversation(state, state.activeId);
-
-    expect(next.conversations).toHaveLength(1);
-    expect(next.activeId).not.toBe(state.activeId);
-  });
-
-  it("updates an existing message while preserving its identity", () => {
-    const state = loadConversationState();
-    const withMessage = appendMessage(state, state.activeId, {
-      role: "assistant",
-      text: "",
-      figures: [],
+  it("does not rename a conversation that already has a custom title", () => {
+    const state = createInitialState([
+      makeConversation({ id: "s1", title: "已有标题" }),
+    ]);
+    const next = appendMessage(state, "s1", {
+      role: "user",
+      text: "新的问题",
     });
-    const messageId = withMessage.conversations[0].messages[0].id;
+    expect(next.conversations[0].title).toBe("已有标题");
+  });
 
-    const next = updateMessage(withMessage, state.activeId, messageId, {
+  it("sorts the updated conversation to the top", () => {
+    const state = createInitialState([
+      makeConversation({ id: "s1" }),
+      makeConversation({ id: "s2" }),
+    ]);
+    const next = appendMessage(state, "s2", { role: "user", text: "消息" });
+    expect(next.conversations[0].id).toBe("s2");
+    expect(next.activeId).toBe("s2");
+  });
+});
+
+describe("updateMessage", () => {
+  it("updates text and figures while preserving message id", () => {
+    const state = appendMessage(
+      createInitialState([makeConversation({ id: "s1" })]),
+      "s1",
+      { role: "assistant", text: "" },
+    );
+    const messageId = state.conversations[0].messages[0].id;
+    const next = updateMessage(state, "s1", messageId, {
       text: "正在生成",
       figures: [{ data: [] }],
     });
-
     expect(next.conversations[0].messages[0]).toMatchObject({
       id: messageId,
       text: "正在生成",
@@ -72,114 +153,35 @@ describe("conversation storage", () => {
     });
   });
 
-  it("repairs malformed persisted conversations and messages", () => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        activeId: "missing",
-        conversations: [
-          {
-            id: "valid",
-            title: 123,
-            summary: null,
-            createdAt: "2026-05-15T00:00:00.000Z",
-            updatedAt: "bad-date",
-            messages: [
-              {
-                id: "m1",
-                role: "assistant",
-                text: 42,
-                figures: "bad",
-                createdAt: "bad-date",
-              },
-              {
-                id: "m2",
-                role: "system",
-                text: "ignore me",
-                figures: [],
-                createdAt: "2026-05-15T00:00:00.000Z",
-              },
-            ],
-          },
-          null,
-        ],
-      }),
-    );
+  it("does not affect other conversations", () => {
+    const state = createInitialState([
+      makeConversation({ id: "s1" }),
+      makeConversation({ id: "s2" }),
+    ]);
+    const withMsg = appendMessage(state, "s1", { role: "assistant", text: "" });
+    const msgId = withMsg.conversations.find((c) => c.id === "s1")!.messages[0].id;
+    const next = updateMessage(withMsg, "s1", msgId, { text: "更新后" });
+    const s2 = next.conversations.find((c) => c.id === "s2");
+    expect(s2?.messages).toHaveLength(0);
+  });
+});
 
-    const state = loadConversationState();
-
-    expect(state.activeId).toBe("valid");
-    expect(state.conversations).toHaveLength(1);
-    expect(state.conversations[0]).toMatchObject({
-      id: "valid",
-      title: "新的运营问答",
-      summary: "还没有消息",
-    });
-    expect(state.conversations[0].messages).toHaveLength(1);
-    expect(state.conversations[0].messages[0]).toMatchObject({
-      id: "m1",
-      role: "assistant",
-      text: "",
-      figures: [],
-    });
+describe("getActiveConversation", () => {
+  it("returns the currently active conversation", () => {
+    const state = createInitialState([
+      makeConversation({ id: "s1", title: "第一个" }),
+      makeConversation({ id: "s2", title: "第二个" }),
+    ]);
+    const switched = setActiveConversation(state, "s2");
+    const active = getActiveConversation(switched);
+    expect(active.id).toBe("s2");
+    expect(active.title).toBe("第二个");
   });
 
-  it("filters stale LangGraph recursion assistant errors from persisted conversations", () => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        activeId: "recursion-session",
-        conversations: [
-          {
-            id: "recursion-session",
-            title: "分析儿科",
-            summary: "抱歉，处理您的问题时出现错误：Recursion limit of 25 reached without hitting a stop condition. For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT。请尝试换一种方式提问。",
-            createdAt: "2026-05-15T00:00:00.000Z",
-            updatedAt: "2026-05-15T00:00:00.000Z",
-            messages: [
-              {
-                id: "m1",
-                role: "user",
-                text: "分析一下儿科的数据",
-                figures: [],
-                createdAt: "2026-05-15T00:00:00.000Z",
-              },
-              {
-                id: "m2",
-                role: "assistant",
-                text: "抱歉，处理您的问题时出现错误：Recursion limit of 25 reached without hitting a stop condition. For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT。请尝试换一种方式提问。",
-                figures: [],
-                createdAt: "2026-05-15T00:00:01.000Z",
-              },
-            ],
-          },
-        ],
-      }),
-    );
-
-    const state = loadConversationState();
-
-    expect(state.conversations[0].messages).toHaveLength(1);
-    expect(state.conversations[0].messages[0]).toMatchObject({
-      role: "user",
-      text: "分析一下儿科的数据",
-    });
-    expect(state.conversations[0].summary).toBe("分析一下儿科的数据");
-  });
-
-  it("keeps in-memory state when localStorage writes fail", () => {
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("quota exceeded");
-    });
-
-    const state = loadConversationState();
-    const next = appendMessage(state, state.activeId, {
-      role: "user",
-      text: "分析门诊趋势",
-      figures: [],
-    });
-
-    expect(next.conversations[0].messages[0].text).toBe("分析门诊趋势");
-    setItem.mockRestore();
+  it("falls back to the first conversation when activeId is invalid", () => {
+    const state = createInitialState([makeConversation({ id: "s1" })]);
+    const badState = { ...state, activeId: "nonexistent" };
+    const active = getActiveConversation(badState);
+    expect(active.id).toBe("s1");
   });
 });

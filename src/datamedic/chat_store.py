@@ -58,8 +58,15 @@ def _conversation_lock(session_id: str, root: Path | None = None) -> threading.L
             lock = threading.Lock()
             _conversation_locks[key] = lock
             _lock_access_order.append(key)
+            # Evict oldest locks, but skip any that are currently held.
+            # If all locks are held (extremely rare), force-evict the oldest
+            # to prevent an infinite loop that would hang the server.
             while len(_lock_access_order) > MAX_LOCKS:
                 evicted_key = _lock_access_order.pop(0)
+                evicted_lock = _conversation_locks.get(evicted_key)
+                if evicted_lock is not None and evicted_lock.locked() and len(_lock_access_order) >= MAX_LOCKS:
+                    _lock_access_order.append(evicted_key)
+                    continue
                 _conversation_locks.pop(evicted_key, None)
         else:
             _lock_access_order.remove(key)

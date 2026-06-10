@@ -13,7 +13,7 @@ import asyncio
 import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from datamedic.api.schemas import ChatRequest, ChatResponse, ConversationRecord
 from datamedic.chat_store import (
@@ -349,14 +349,20 @@ async def _stream_chat_events(request: ChatRequest) -> AsyncIterator[str]:
         logger.error("Stream chat error session_id=%s", request.session_id, exc_info=True)
         fallback = _department_overview_after_recursion_error(request.message, e)
         if fallback:
-            async for event in _stream_department_overview(request.session_id, fallback):
-                yield event
-            return
+            try:
+                async for event in _stream_department_overview(request.session_id, fallback):
+                    yield event
+                return
+            except Exception:
+                logger.error("Fallback overview failed", exc_info=True)
 
         error_text = _safe_error_text(e)
         if _is_recursion_limit_error(e):
             error_text = _build_recursion_error_with_context(request.session_id, request.message)
-        append_message(request.session_id, "assistant", error_text, [])
+        try:
+            append_message(request.session_id, "assistant", error_text, [])
+        except Exception:
+            logger.warning("Failed to persist error message", exc_info=True)
         yield _ndjson_event(
             {
                 "type": "error",
@@ -397,6 +403,14 @@ async def create_session():
     return create_conversation()
 
 
+@router.get("/sessions/{session_id}", response_model=ConversationRecord)
+async def get_session(session_id: str):
+    conversation = load_conversation(session_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return conversation
+
+
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     delete_conversation(session_id)
@@ -419,12 +433,18 @@ async def _handle_dashscope_ws(
             on_disconnect()
     except ImportError:
         logger.warning("DashScope %s SDK not available", sdk_name)
-        await websocket.send_json({"error": f"DashScope {sdk_name} SDK not available"})
-        await websocket.close()
+        try:
+            await websocket.send_json({"error": f"DashScope {sdk_name} SDK not available"})
+            await websocket.close()
+        except Exception:
+            pass
     except Exception as e:
         logger.error("%s WebSocket error", name, exc_info=True)
-        await websocket.send_json({"error": f"{name} error: {str(e)}"})
-        await websocket.close()
+        try:
+            await websocket.send_json({"error": f"{name} error: {str(e)}"})
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.websocket("/ws/speech")

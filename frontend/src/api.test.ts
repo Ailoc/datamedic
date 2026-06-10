@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createBackendSession,
   deleteBackendSession,
+  fetchSession,
   fetchSessions,
   sendChatMessage,
   streamChatMessage,
@@ -237,5 +238,34 @@ describe("session API", () => {
 
     await expect(deleteBackendSession("session-3")).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledWith("/sessions/session-3", { method: "DELETE" });
+  });
+
+  it("fetches a single backend conversation", async () => {
+    const conversation = {
+      id: "session-detail",
+      title: "详情会话",
+      summary: "摘要",
+      createdAt: "2026-05-15T00:00:00.000Z",
+      updatedAt: "2026-05-15T00:00:00.000Z",
+      messages: [
+        {
+          id: "msg-1",
+          role: "user",
+          text: "你好",
+          figures: [],
+          createdAt: "2026-05-15T00:00:00.000Z",
+        },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => conversation,
+      }),
+    );
+
+    await expect(fetchSession("session-detail")).resolves.toEqual(conversation);
+    expect(fetch).toHaveBeenCalledWith("/sessions/session-detail");
   });
 });

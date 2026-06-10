@@ -72,6 +72,19 @@ def test_sessions_api_creates_lists_and_deletes_backend_conversations(tmp_path, 
     assert client.get("/sessions").json() == []
 
 
+def test_get_session_returns_conversation_or_404(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONVERSATION_DATA_DIR", str(tmp_path))
+
+    conversation = client.post("/sessions").json()
+
+    response = client.get(f"/sessions/{conversation['id']}")
+    assert response.status_code == 200
+    assert response.json()["id"] == conversation["id"]
+    assert response.json()["messages"] == []
+
+    assert client.get("/sessions/nonexistent").status_code == 404
+
+
 def test_extract_ai_text_returns_last_ai_message():
     messages = [
         SimpleNamespace(type="ai", content="旧回答"),

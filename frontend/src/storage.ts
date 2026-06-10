@@ -1,13 +1,11 @@
 /**
- * 会话持久化层，基于 localStorage 实现多会话 CRUD。
+ * 会话内存状态管理。
  *
- * 数据结构: ConversationState { activeId, conversations[] }
- * 每次写操作都会同步持久化，页面刷新后自动恢复。
+ * 纯内存操作，不承担任何持久化职责。
+ * 所有数据均来自后端 API，写操作也通过后端 API 完成。
  */
 
-import { isRecord, type ChatMessage, type Conversation, type ConversationState, type PlotlyFigure, type Role } from "./types";
-
-export const STORAGE_KEY = "datamedic.conversations.v1";
+import type { ChatMessage, Conversation, ConversationState, PlotlyFigure, Role } from "./types";
 
 const DEFAULT_TITLE = "新的运营问答";
 
@@ -26,49 +24,44 @@ const createId = () => {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
-const stringOr = (value: unknown, fallback: string, allowBlank = false) => {
-  if (typeof value !== "string") return fallback;
-  if (!allowBlank && !value.trim()) return fallback;
-  return value;
+const titleFromText = (text: string): string => {
+  const compact = text.trim().replace(/\s+/g, " ");
+  if (!compact) {
+    return DEFAULT_TITLE;
+  }
+  if (compact.length <= 15) {
+    return compact;
+  }
+  return `${compact.slice(0, 15)}...`;
 };
 
-const dateOr = (value: unknown, fallback: string) => {
-  if (typeof value !== "string") return fallback;
-  return Number.isNaN(new Date(value).getTime()) ? fallback : value;
+/**
+ * 用后端返回的会话列表构建前端内存初始状态。
+ * 如果列表为空，则创建一个默认空会话。
+ */
+export const createInitialState = (conversations: Conversation[]): ConversationState => {
+  if (conversations.length === 0) {
+    const now = nowIso();
+    const conversation: Conversation = {
+      id: createId(),
+      title: DEFAULT_TITLE,
+      summary: "还没有消息",
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+    };
+    return { activeId: conversation.id, conversations: [conversation] };
+  }
+  return { activeId: conversations[0].id, conversations };
 };
 
-const normalizeFigures = (value: unknown): PlotlyFigure[] => {
-  if (!Array.isArray(value)) return [];
-  return value.filter(isRecord);
-};
-
-const normalizeMessage = (value: unknown): ChatMessage | null => {
-  if (!isRecord(value)) return null;
-  if (value.role !== "user" && value.role !== "assistant") return null;
-  const text = stringOr(value.text, "", true);
-  if (value.role === "assistant" && isStaleBackendErrorMessage(text)) return null;
-  return {
-    id: stringOr(value.id, createId()),
-    role: value.role,
-    text,
-    figures: normalizeFigures(value.figures),
-    createdAt: dateOr(value.createdAt, nowIso()),
-  };
-};
-
-const isStaleBackendErrorMessage = (text: string): boolean => {
-  const markers = [
-    "Recursion limit of 25 reached",
-    "GRAPH_RECURSION_LIMIT",
-    "LangGraph",
-    "docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT",
-  ];
-  return markers.some((marker) => text.includes(marker));
-};
-
-const createEmptyConversation = (): Conversation => {
+/**
+ * 在内存状态中追加一个新的空会话，并将其设为激活会话。
+ * 返回新状态（不修改入参）。
+ */
+export const createConversation = (state: ConversationState): ConversationState => {
   const now = nowIso();
-  return {
+  const conversation: Conversation = {
     id: createId(),
     title: DEFAULT_TITLE,
     summary: "还没有消息",
@@ -76,80 +69,15 @@ const createEmptyConversation = (): Conversation => {
     updatedAt: now,
     messages: [],
   };
-};
-
-const normalizeConversation = (value: unknown): Conversation | null => {
-  if (!isRecord(value)) return null;
-  const createdAt = dateOr(value.createdAt, nowIso());
-  const messages = Array.isArray(value.messages)
-    ? value.messages
-        .map(normalizeMessage)
-        .filter((message): message is ChatMessage => Boolean(message))
-    : [];
-  const fallbackSummary = messages.at(-1)?.text || "还没有消息";
-  const rawSummary = stringOr(value.summary, fallbackSummary);
   return {
-    id: stringOr(value.id, createId()),
-    title: stringOr(value.title, DEFAULT_TITLE),
-    summary: isStaleBackendErrorMessage(rawSummary) ? fallbackSummary : rawSummary,
-    createdAt,
-    updatedAt: dateOr(value.updatedAt, createdAt),
-    messages,
+    activeId: conversation.id,
+    conversations: [conversation, ...state.conversations],
   };
 };
 
-const normalize = (value: unknown): ConversationState => {
-  if (!isRecord(value)) {
-    const conversation = createEmptyConversation();
-    return { activeId: conversation.id, conversations: [conversation] };
-  }
-  const candidate = value as Partial<ConversationState>;
-  const conversations = Array.isArray(candidate.conversations)
-    ? candidate.conversations
-        .map(normalizeConversation)
-        .filter((conversation): conversation is Conversation => Boolean(conversation))
-    : [];
-  if (conversations.length === 0) {
-    const conversation = createEmptyConversation();
-    return { activeId: conversation.id, conversations: [conversation] };
-  }
-  const activeId =
-    typeof candidate.activeId === "string" &&
-    conversations.some((conversation) => conversation.id === candidate.activeId)
-      ? candidate.activeId
-      : conversations[0].id;
-  return { activeId, conversations };
-};
-
-export const saveConversationState = (state: ConversationState): ConversationState => {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    return state;
-  }
-  return state;
-};
-
-export const loadConversationState = (): ConversationState => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return saveConversationState(normalize(null));
-    }
-    return saveConversationState(normalize(JSON.parse(raw)));
-  } catch {
-    return saveConversationState(normalize(null));
-  }
-};
-
-export const createConversation = (state: ConversationState): ConversationState => {
-  const conversation = createEmptyConversation();
-  return saveConversationState({
-    activeId: conversation.id,
-    conversations: [conversation, ...state.conversations],
-  });
-};
-
+/**
+ * 切换激活会话（纯内存操作）。
+ */
 export const setActiveConversation = (
   state: ConversationState,
   conversationId: string,
@@ -157,23 +85,31 @@ export const setActiveConversation = (
   if (!state.conversations.some((conversation) => conversation.id === conversationId)) {
     return state;
   }
-  return saveConversationState({ ...state, activeId: conversationId });
+  return { ...state, activeId: conversationId };
 };
 
+/**
+ * 删除指定会话；若删除的是当前激活会话，自动切换到剩余第一个。
+ * 若全部删除完毕，创建一个新的空会话。
+ */
 export const deleteConversation = (
   state: ConversationState,
   conversationId: string,
 ): ConversationState => {
   const remaining = state.conversations.filter((conversation) => conversation.id !== conversationId);
   if (remaining.length === 0) {
-    return saveConversationState(normalize(null));
+    return createInitialState([]);
   }
-  return saveConversationState({
+  return {
     activeId: state.activeId === conversationId ? remaining[0].id : state.activeId,
     conversations: remaining,
-  });
+  };
 };
 
+/**
+ * 向指定会话追加一条消息（纯内存操作）。
+ * 如果是第一条用户消息且会话标题为默认值，则自动更新标题。
+ */
 export const appendMessage = (
   state: ConversationState,
   conversationId: string,
@@ -200,14 +136,17 @@ export const appendMessage = (
       messages: nextMessages,
     };
   });
-  return saveConversationState({
+  return {
     activeId: conversationId,
     conversations: conversations.sort((a, b) =>
       a.id === conversationId ? -1 : b.id === conversationId ? 1 : 0,
     ),
-  });
+  };
 };
 
+/**
+ * 更新指定会话中指定消息的文本或图表（纯内存操作）。
+ */
 export const updateMessage = (
   state: ConversationState,
   conversationId: string,
@@ -234,23 +173,15 @@ export const updateMessage = (
       ),
     };
   });
-  return saveConversationState({ ...state, conversations });
+  return { ...state, conversations };
 };
 
+/**
+ * 获取当前激活的会话对象。
+ */
 export const getActiveConversation = (state: ConversationState): Conversation => {
   return (
     state.conversations.find((conversation) => conversation.id === state.activeId) ??
     state.conversations[0]
   );
-};
-
-const titleFromText = (text: string): string => {
-  const compact = text.trim().replace(/\s+/g, " ");
-  if (!compact) {
-    return DEFAULT_TITLE;
-  }
-  if (compact.length <= 15) {
-    return compact;
-  }
-  return `${compact.slice(0, 15)}...`;
 };

@@ -1,6 +1,7 @@
 /**
  * 主应用组件，包含侧边栏会话管理、聊天线程、消息输入和 Plotly 图表渲染。
  * 支持流式文本输出和实时语音输入/输出。
+ * 所有会话数据均来自后端 API，前端仅保留内存状态。
  */
 
 import {
@@ -12,7 +13,11 @@ import {
   useState,
 } from "react";
 import { BarChart3, Clock3, Database, Volume2, VolumeX } from "lucide-react";
-import { createBackendSession, deleteBackendSession, fetchSessions } from "./api";
+import {
+  createBackendSession,
+  deleteBackendSession,
+  fetchSessions,
+} from "./api";
 import { Composer } from "./components/Composer";
 import { MessageList, ThinkingIndicator } from "./components/MessageList";
 import { Sidebar } from "./components/Sidebar";
@@ -21,17 +26,17 @@ import { Welcome } from "./components/Welcome";
 import { useChatSession } from "./hooks/useChatSession";
 import {
   createConversation,
+  createInitialState,
   deleteConversation,
   getActiveConversation,
-  loadConversationState,
-  saveConversationState,
   setActiveConversation,
 } from "./storage";
 import type { ConversationState } from "./types";
 import { SpeechPlayer, SpeechRecognizer } from "./voice";
 
 function App() {
-  const [state, setState] = useState<ConversationState>(() => loadConversationState());
+  const [state, setState] = useState<ConversationState>({ activeId: "", conversations: [] });
+  const [initializing, setInitializing] = useState(true);
   const [input, setInput] = useState("");
   const [recording, setRecording] = useState(false);
   const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(false);
@@ -64,15 +69,21 @@ function App() {
         const conversations = await fetchSessions();
         if (cancelled) return;
         if (conversations.length > 0) {
-          setState(saveConversationState({ activeId: conversations[0].id, conversations }));
+          setState(createInitialState(conversations));
           return;
         }
         const conversation = await createBackendSession();
         if (!cancelled) {
-          setState(saveConversationState({ activeId: conversation.id, conversations: [conversation] }));
+          setState(createInitialState([conversation]));
         }
       } catch {
-        // Keep the localStorage state as an offline fallback.
+        if (!cancelled) {
+          setState(createInitialState([]));
+        }
+      } finally {
+        if (!cancelled) {
+          setInitializing(false);
+        }
       }
     };
 
@@ -93,7 +104,7 @@ function App() {
   };
 
   const { loading, submitMessage } = useChatSession({
-    activeConversationId: active.id,
+    activeConversationId: active?.id ?? "",
     getSpeechPlayer,
     setInput,
     setPendingDeleteId,
@@ -105,21 +116,19 @@ function App() {
 
   useEffect(() => {
     threadEnd.current?.scrollIntoView?.({ block: "end" });
-  }, [active.id, active.messages.length, loading]);
+  }, [active?.id, active?.messages.length, loading]);
 
   const handleCreate = () => {
     setPendingDeleteId(null);
     void createBackendSession()
       .then((conversation) => {
-        setState((currentState) =>
-          saveConversationState({
-            activeId: conversation.id,
-            conversations: [
-              conversation,
-              ...currentState.conversations.filter((item) => item.id !== conversation.id),
-            ],
-          }),
-        );
+        setState((currentState) => ({
+          activeId: conversation.id,
+          conversations: [
+            conversation,
+            ...currentState.conversations.filter((item) => item.id !== conversation.id),
+          ],
+        }));
       })
       .catch(() => {
         setState((currentState) => createConversation(currentState));
@@ -141,6 +150,7 @@ function App() {
 
   const handleSwitch = (conversationId: string) => {
     setPendingDeleteId(null);
+    if (conversationId === state.activeId) return;
     setState(setActiveConversation(state, conversationId));
   };
 
@@ -208,6 +218,20 @@ function App() {
       setVoiceHint("无法使用麦克风");
     }
   };
+
+  if (initializing || !active) {
+    return (
+      <div className="app-shell">
+        <main className="chat-workspace">
+          <section className="thread-surface" aria-label="对话内容">
+            <div className="thread-inner">
+              <ThinkingIndicator />
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">

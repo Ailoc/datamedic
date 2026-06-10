@@ -2,7 +2,6 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { STORAGE_KEY } from "./storage";
 
 type MockSpeechCallbacks = {
   onError: (message: string) => void;
@@ -47,6 +46,7 @@ vi.mock("./api", () => ({
   isNonEmptyDelta: (accumulated: string, delta: string) => accumulated.trim() || delta.trim(),
   createBackendSession: createBackendSessionMock,
   deleteBackendSession: deleteBackendSessionMock,
+  fetchSession: vi.fn(),
   fetchSessions: fetchSessionsMock,
   streamChatMessage: streamChatMessageMock,
 }));
@@ -64,11 +64,19 @@ vi.mock("./voice", () => ({
   SpeechRecognizer: speechRecognizerMock,
 }));
 
+const DEFAULT_SESSION = {
+  id: "default-session",
+  title: "新的运营问答",
+  summary: "还没有消息",
+  createdAt: "2026-05-15T00:00:00.000Z",
+  updatedAt: "2026-05-15T00:00:00.000Z",
+  messages: [],
+};
+
 describe("DataMedic app shell", () => {
   beforeEach(() => {
-    localStorage.clear();
     fetchSessionsMock.mockReset();
-    fetchSessionsMock.mockRejectedValue(new Error("offline"));
+    fetchSessionsMock.mockResolvedValue([DEFAULT_SESSION]);
     createBackendSessionMock.mockReset();
     createBackendSessionMock.mockResolvedValue({
       id: "backend-new",
@@ -107,10 +115,15 @@ describe("DataMedic app shell", () => {
     );
   });
 
-  it("renders a branded conversation workspace", () => {
-    render(<App />);
+  it("renders a branded conversation workspace", async () => {
+    const { container } = render(<App />);
 
-    expect(screen.getByText("DataMedic")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchSessionsMock).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByText("DataMedic")).toBeInTheDocument();
+    });
     expect(screen.getByRole("button", { name: "新建会话" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "消息输入" })).toBeInTheDocument();
   });
@@ -139,21 +152,20 @@ describe("DataMedic app shell", () => {
 
     expect(await screen.findByRole("heading", { name: "后端会话" })).toBeInTheDocument();
     expect(screen.getByText("历史回答")).toBeInTheDocument();
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    expect(saved.activeId).toBe("backend-1");
-    expect(saved.conversations[0].messages[0].figures).toHaveLength(1);
+    expect(fetchSessionsMock).toHaveBeenCalled();
   });
 
   it("creates conversations and requires confirmation before deleting one", async () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.click(screen.getByRole("button", { name: "新建会话" }));
     await waitFor(() => expect(createBackendSessionMock).toHaveBeenCalled());
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    expect(saved.conversations).toHaveLength(2);
 
     const sessionList = screen.getByRole("list", { name: "会话列表" });
+    expect(within(sessionList).getAllByRole("listitem")).toHaveLength(2);
+
     const firstSession = within(sessionList).getAllByRole("listitem")[0];
     const sessionButton = within(firstSession).getByRole("button", {
       name: /切换到/,
@@ -163,18 +175,18 @@ describe("DataMedic app shell", () => {
     await user.click(within(firstSession).getByRole("button", { name: /删除会话/ }));
 
     expect(within(firstSession).getByRole("button", { name: /确认删除/ })).toBeInTheDocument();
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").conversations).toHaveLength(2);
+    expect(within(sessionList).getAllByRole("listitem")).toHaveLength(2);
 
     await user.click(within(firstSession).getByRole("button", { name: /确认删除/ }));
     await waitFor(() => expect(deleteBackendSessionMock).toHaveBeenCalled());
 
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").conversations).toHaveLength(1);
+    expect(within(sessionList).getAllByRole("listitem")).toHaveLength(1);
   });
 
-  it("keeps the voice control before the text input inside the composer", () => {
+  it("keeps the voice control before the text input inside the composer", async () => {
     render(<App />);
 
-    const composer = screen.getByRole("form", { name: "消息发送区" });
+    const composer = await screen.findByRole("form", { name: "消息发送区" });
     const controls = within(composer)
       .getAllByRole("button")
       .map((button) => button.getAttribute("aria-label") ?? button.textContent);
@@ -185,6 +197,7 @@ describe("DataMedic app shell", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.click(screen.getByRole("button", { name: "语音输入" }));
 
     const callbacks = speechRecognizerMock.mock.calls[0][0] as MockSpeechCallbacks;
@@ -200,6 +213,7 @@ describe("DataMedic app shell", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "分析");
     await user.click(screen.getByRole("button", { name: "语音输入" }));
 
@@ -221,6 +235,7 @@ describe("DataMedic app shell", () => {
 
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.click(screen.getByRole("button", { name: "语音输入" }));
     const callbacks = speechRecognizerMock.mock.calls[0][0] as MockSpeechCallbacks;
     act(() => {
@@ -245,6 +260,7 @@ describe("DataMedic app shell", () => {
     }));
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "分析门诊趋势");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
     await within(screen.getByRole("region", { name: "对话内容" })).findByText("已完成分析");
@@ -286,12 +302,13 @@ describe("DataMedic app shell", () => {
 
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.click(screen.getByRole("button", { name: "开启语音输出" }));
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "继续分析");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
 
     await waitFor(() => expect(enqueueMock).toHaveBeenCalledWith("第一句。"));
-    resolveStream({ ok: true, text: "第一句。第二句", figures: [] });
+    resolveStream({ ok: true, text: "第一句。第一句", figures: [] });
   });
 
   it("stops queued speech when the stream finishes with an error", async () => {
@@ -320,6 +337,7 @@ describe("DataMedic app shell", () => {
 
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.click(screen.getByRole("button", { name: "开启语音输出" }));
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "继续分析");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
@@ -337,13 +355,12 @@ describe("DataMedic app shell", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "分析门诊趋势");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
 
     const thread = screen.getByRole("region", { name: "对话内容" });
     expect(await within(thread).findByText("已完成分析")).toBeInTheDocument();
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    expect(saved.conversations[0].messages.at(-1).text).toBe("已完成分析");
   });
 
   it("does not render a blank assistant bubble while only whitespace has streamed", async () => {
@@ -363,6 +380,7 @@ describe("DataMedic app shell", () => {
 
     const { container } = render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "分析门诊趋势");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
 
@@ -391,6 +409,7 @@ describe("DataMedic app shell", () => {
 
     const { container } = render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "分析门诊趋势");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
 
@@ -421,21 +440,22 @@ describe("DataMedic app shell", () => {
 
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "分析门诊趋势");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
     await within(screen.getByRole("region", { name: "对话内容" })).findByText("处理中");
 
     await user.click(screen.getByRole("button", { name: "新建会话" }));
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").conversations).toHaveLength(2);
+    await waitFor(() => expect(createBackendSessionMock).toHaveBeenCalled());
+
+    const sessionList = screen.getByRole("list", { name: "会话列表" });
+    expect(within(sessionList).getAllByRole("listitem")).toHaveLength(2);
 
     await act(async () => {
       resolveStream({ ok: true, text: "处理完成", figures: [] });
     });
 
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    expect(saved.conversations).toHaveLength(2);
-    expect(saved.activeId).toBe(saved.conversations[0].id);
-    expect(saved.conversations[1].messages.at(-1).text).toBe("处理完成");
+    expect(within(sessionList).getAllByRole("listitem")).toHaveLength(2);
   });
 
   it("renders Plotly figures with an immersive transparent theme", async () => {
@@ -470,6 +490,7 @@ describe("DataMedic app shell", () => {
 
     render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "展示表格");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
 
@@ -516,6 +537,7 @@ describe("DataMedic app shell", () => {
 
     const { unmount } = render(<App />);
 
+    await screen.findByText("DataMedic");
     await user.type(screen.getByRole("textbox", { name: "消息输入" }), "展示趋势");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
     await waitFor(() => expect(plotlyReactMock).toHaveBeenCalled());
