@@ -24,6 +24,7 @@ import { Sidebar } from "./components/Sidebar";
 import { StatusPill } from "./components/StatusPill";
 import { Welcome } from "./components/Welcome";
 import { useChatSession } from "./hooks/useChatSession";
+import { useVoiceInput } from "./hooks/useVoiceInput";
 import {
   createConversation,
   createInitialState,
@@ -32,21 +33,23 @@ import {
   setActiveConversation,
 } from "./storage";
 import type { ConversationState } from "./types";
-import { SpeechPlayer, SpeechRecognizer } from "./voice";
+import { SpeechPlayer } from "./voice";
 
 function App() {
   const [state, setState] = useState<ConversationState>({ activeId: "", conversations: [] });
   const [initializing, setInitializing] = useState(true);
   const [input, setInput] = useState("");
-  const [recording, setRecording] = useState(false);
   const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(false);
-  const [voiceHint, setVoiceHint] = useState("");
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const player = useRef<SpeechPlayer | null>(null);
-  const recognizer = useRef<SpeechRecognizer | null>(null);
   const voiceOutputEnabledRef = useRef(false);
-  const voiceDraft = useRef("");
   const threadEnd = useRef<HTMLDivElement | null>(null);
+
+  const { recording, voiceHint, toggleVoice, stopVoiceInput, setVoiceHint, markManualInput } =
+    useVoiceInput({
+      input,
+      setInput,
+    });
 
   const active = useMemo(() => getActiveConversation(state), [state]);
   const totalMessages = useMemo(
@@ -56,7 +59,6 @@ function App() {
 
   useEffect(() => {
     return () => {
-      recognizer.current?.stop();
       player.current?.destroy();
     };
   }, []);
@@ -111,6 +113,7 @@ function App() {
     setState,
     setVoiceHint,
     state,
+    stopVoiceInput,
     voiceOutputEnabledRef,
   });
 
@@ -178,47 +181,6 @@ function App() {
     });
   };
 
-  const toggleVoice = async () => {
-    if (recording) {
-      recognizer.current?.stop();
-      recognizer.current = null;
-      voiceDraft.current = "";
-      setRecording(false);
-      setVoiceHint("");
-      return;
-    }
-    voiceDraft.current = input.trim();
-    const instance = new SpeechRecognizer({
-      onText: (text, isFinal) => {
-        const nextText = text.trim();
-        setVoiceHint(nextText || "正在聆听");
-        if (isFinal && nextText) {
-          voiceDraft.current = [voiceDraft.current, nextText].filter(Boolean).join(" ");
-          setInput(voiceDraft.current);
-        }
-      },
-      onError: (message) => {
-        instance.stop();
-        recognizer.current = null;
-        voiceDraft.current = "";
-        setVoiceHint(message);
-        setRecording(false);
-      },
-    });
-    recognizer.current = instance;
-    setRecording(true);
-    setVoiceHint("正在聆听");
-    try {
-      await instance.start();
-    } catch {
-      instance.stop();
-      recognizer.current = null;
-      voiceDraft.current = "";
-      setRecording(false);
-      setVoiceHint("无法使用麦克风");
-    }
-  };
-
   if (initializing || !active) {
     return (
       <div className="app-shell">
@@ -271,7 +233,12 @@ function App() {
         <section className="thread-surface" aria-label="对话内容">
           <div className="thread-inner">
             {active.messages.length === 0 ? (
-              <Welcome onPickExample={(example) => setInput(example)} />
+              <Welcome
+                onPickExample={(example) => {
+                  markManualInput(example);
+                  setInput(example);
+                }}
+              />
             ) : (
               <MessageList messages={active.messages} />
             )}
@@ -285,7 +252,10 @@ function App() {
           loading={loading}
           recording={recording}
           voiceHint={voiceHint}
-          onInput={setInput}
+          onInput={(value) => {
+            markManualInput(value);
+            setInput(value);
+          }}
           onKeyDown={handleComposerKeyDown}
           onSubmit={handleSubmit}
           onToggleVoice={toggleVoice}

@@ -11,7 +11,7 @@ import { BACKEND_CONNECTION_ERROR, isNonEmptyDelta, streamChatMessage } from "..
 import { appendMessage, getActiveConversation, updateMessage } from "../storage";
 import type { ConversationState } from "../types";
 import type { SpeechPlayer } from "../voice";
-import { compactSpeechText, extractSpeakableSegments } from "../speechSegments";
+import { compactSpeechText, extractSpeakableSegments, mergeShortSpeechSegments } from "../speechSegments";
 
 type UseChatSessionParams = {
   activeConversationId: string;
@@ -21,6 +21,7 @@ type UseChatSessionParams = {
   setState: Dispatch<SetStateAction<ConversationState>>;
   setVoiceHint: (value: string) => void;
   state: ConversationState;
+  stopVoiceInput: (options?: { resetComposeState?: boolean }) => void;
   voiceOutputEnabledRef: MutableRefObject<boolean>;
 };
 
@@ -32,6 +33,7 @@ export function useChatSession({
   setState,
   setVoiceHint,
   state,
+  stopVoiceInput,
   voiceOutputEnabledRef,
 }: UseChatSessionParams) {
   const [loading, setLoading] = useState(false);
@@ -46,8 +48,8 @@ export function useChatSession({
   const submitMessage = async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed || loading) return;
+    stopVoiceInput({ resetComposeState: true });
     setInput("");
-    setVoiceHint("");
     setPendingDeleteId(null);
     if (voiceOutputEnabledRef.current) {
       getSpeechPlayer().stop();
@@ -86,18 +88,19 @@ export function useChatSession({
             setVoiceHint(`语音输出失败：${error instanceof Error ? error.message : "请检查服务配置"}`),
           );
       };
+      const flushSpeakableSegments = (flush = false) => {
+        const extracted = extractSpeakableSegments(speechBuffer, flush);
+        speechBuffer = extracted.remaining;
+        mergeShortSpeechSegments(extracted.segments).forEach(enqueueSpeech);
+      };
       const queueSpeakableDeltas = (delta: string) => {
         if (!voiceOutputEnabledRef.current) return;
         speechBuffer += delta;
-        const extracted = extractSpeakableSegments(speechBuffer);
-        speechBuffer = extracted.remaining;
-        extracted.segments.forEach(enqueueSpeech);
+        flushSpeakableSegments(false);
       };
       const flushSpeech = (fallbackText: string) => {
         if (!voiceOutputEnabledRef.current) return;
-        const extracted = extractSpeakableSegments(speechBuffer, true);
-        speechBuffer = extracted.remaining;
-        extracted.segments.forEach(enqueueSpeech);
+        flushSpeakableSegments(true);
         if (queuedSpeechText || !fallbackText) return;
         enqueueSpeech(fallbackText);
       };

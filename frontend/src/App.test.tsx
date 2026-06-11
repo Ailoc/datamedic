@@ -225,6 +225,64 @@ describe("DataMedic app shell", () => {
     expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("分析 门诊趋势");
   });
 
+  it("starts a fresh voice session after the previous dictation was sent", async () => {
+    const user = userEvent.setup();
+    const stopMock = vi.fn();
+    speechRecognizerMock.mockImplementation(() => ({
+      start: vi.fn(() => Promise.resolve()),
+      stop: stopMock,
+    }));
+    render(<App />);
+
+    await screen.findByText("DataMedic");
+    await user.click(screen.getByRole("button", { name: "语音输入" }));
+
+    let callbacks = speechRecognizerMock.mock.calls[0][0] as MockSpeechCallbacks;
+    act(() => {
+      callbacks.onText("查询门诊量", true);
+    });
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("查询门诊量");
+
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue(""),
+    );
+    expect(stopMock).toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "语音输入" }));
+    callbacks = speechRecognizerMock.mock.calls[1][0] as MockSpeechCallbacks;
+    act(() => {
+      callbacks.onText("查询住院量", true);
+    });
+
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("查询住院量");
+  });
+
+  it("appends new dictation to previous voice output when mic pressed again without sending", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("DataMedic");
+    await user.click(screen.getByRole("button", { name: "语音输入" }));
+
+    let callbacks = speechRecognizerMock.mock.calls[0][0] as MockSpeechCallbacks;
+    act(() => {
+      callbacks.onText("第一句", true);
+    });
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("第一句");
+
+    await user.click(screen.getByRole("button", { name: "语音输入" }));
+    await user.click(screen.getByRole("button", { name: "语音输入" }));
+
+    callbacks = speechRecognizerMock.mock.calls[1][0] as MockSpeechCallbacks;
+    act(() => {
+      callbacks.onText("第二句", true);
+    });
+
+    // Previous voice text is preserved as prefix; new dictation appends.
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("第一句 第二句");
+  });
+
   it("stops voice recognition resources when recognition reports an error", async () => {
     const user = userEvent.setup();
     const stopMock = vi.fn();
@@ -514,6 +572,71 @@ describe("DataMedic app shell", () => {
       displayModeBar: false,
       responsive: true,
     });
+  });
+
+  it("absorbs manual edit during continuous recording and resumes dictation on next ASR result", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("DataMedic");
+
+    // Step 1: Start recording.
+    await user.click(screen.getByRole("button", { name: "语音输入" }));
+    expect(screen.getByRole("button", { name: "语音输入" })).toHaveClass("is-recording");
+
+    // Step 2: Voice fills first sentence.
+    const cb = speechRecognizerMock.mock.calls[0][0] as MockSpeechCallbacks;
+    act(() => {
+      cb.onText("今天门诊量是多少", true);
+    });
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("今天门诊量是多少");
+
+    // Step 3: User manually deletes "是多少" while recording stays on.
+    // This triggers Composer.onChange → App.onInput → markManualInput → setInput.
+    const textarea = screen.getByRole("textbox", { name: "消息输入" });
+    await user.clear(textarea);
+    await user.type(textarea, "今天门诊量");
+    expect(textarea).toHaveValue("今天门诊量");
+
+    // Step 4: User continues speaking — edit becomes the new prefix.
+    act(() => {
+      cb.onText("和出院人数", true);
+    });
+
+    // The deleted "是多少" should NOT reappear.
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("今天门诊量 和出院人数");
+  });
+
+  it("appends new dictation to partially-edited voice text without reverting the edit", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("DataMedic");
+
+    // Voice fills text.
+    await user.click(screen.getByRole("button", { name: "语音输入" }));
+    const cb = speechRecognizerMock.mock.calls[0][0] as MockSpeechCallbacks;
+    act(() => {
+      cb.onText("查询住院人数和门诊人数", true);
+    });
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("查询住院人数和门诊人数");
+
+    // User deletes "和门诊人数".
+    const textarea = screen.getByRole("textbox", { name: "消息输入" });
+    await user.clear(textarea);
+    await user.type(textarea, "查询住院人数");
+    expect(textarea).toHaveValue("查询住院人数");
+
+    // Multiple ASR results arrive while recording stays on.
+    act(() => {
+      cb.onText("以及手术人数", false);
+    });
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("查询住院人数 以及手术人数");
+
+    act(() => {
+      cb.onText("以及手术人数和出院人数", true);
+    });
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toHaveValue("查询住院人数 以及手术人数和出院人数");
   });
 
   it("purges Plotly figures when chart panels unmount", async () => {

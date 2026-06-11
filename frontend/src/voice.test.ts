@@ -185,10 +185,12 @@ describe("SpeechRecognizer", () => {
   it("stops media and socket resources when speech websocket errors", async () => {
     MockWebSocket.instances = [];
     const track = { stop: vi.fn() };
+    const gainNode = { connect: vi.fn(), disconnect: vi.fn(), gain: { value: 0 } };
     const processor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
     const source = { connect: vi.fn(), disconnect: vi.fn() };
     const audioContext = {
       close: vi.fn(() => Promise.resolve()),
+      createGain: vi.fn(() => gainNode),
       createMediaStreamSource: vi.fn(() => source),
       createScriptProcessor: vi.fn(() => processor),
       destination: {},

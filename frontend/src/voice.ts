@@ -4,18 +4,14 @@
  * SpeechRecognizer: 采集麦克风 PCM 音频流，通过 WebSocket 发送至后端 STT 服务，
  *   实时回调识别文本（中间结果 + 最终结果）。
  *
- * SpeechPlayer: 将文本通过 WebSocket 发送至后端 TTS 服务，接收 MP3 音频块并
- *   使用 Web Audio API 顺序播放。支持队列化播放和中途打断。
+ * SpeechPlayer: 将文本通过 WebSocket 发送至后端 TTS 服务，接收 MP3 音频块，
+ *   解码后使用 Web Audio API 的时间轴调度实现无缝连续播放。
  */
 
 type SpeechCallbacks = {
   onText: (text: string, isFinal: boolean) => void;
   onError: (message: string) => void;
 };
-
-type SpeechSynthesisResult =
-  | { status: "ready"; buffer: AudioBuffer | null }
-  | { status: "error"; error: unknown };
 
 type SpeechQueueItem = {
   content: string;
@@ -52,37 +48,34 @@ export class SpeechRecognizer {
   private processor: ScriptProcessorNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private stream: MediaStream | null = null;
+  private stopping = false;
 
   constructor(private callbacks: SpeechCallbacks) {}
 
   async start() {
     try {
+      // Step 1: Create WebSocket and wait for onopen before proceeding.
+      // Without this, audio frames sent before the socket is ready are
+      // silently dropped, causing incomplete audio input to the ASR model.
+      this.socket = await this.connectWebSocket();
+
+      // Step 2: Acquire microphone (only after WS is ready).
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { sampleRate: 16000, channelCount: 1 },
       });
-      this.socket = new WebSocket(websocketUrl("/ws/speech"));
-      this.socket.onmessage = (event) => {
-        const data = typeof event.data === "string" ? parseSocketJson(event.data) : null;
-        if (!data) {
-          this.callbacks.onError("语音识别响应格式异常");
-          this.stop();
-          return;
-        }
-        if (data.error) {
-          this.callbacks.onError(String(data.error));
-          this.stop();
-          return;
-        }
-        this.callbacks.onText(String(data.text ?? ""), Boolean(data.is_final));
-      };
-      this.socket.onerror = () => {
-        this.callbacks.onError("语音连接失败");
-        this.stop();
-      };
 
+      // Step 3: Build the audio graph.
       this.audioContext = new AudioContext({ sampleRate: 16000 });
       this.source = this.audioContext.createMediaStreamSource(this.stream);
       this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+
+      // Route processor through a zero-gain node instead of directly to
+      // destination.  This keeps `onaudioprocess` firing while preventing
+      // the microphone signal from being played back through the speakers
+      // (which causes distracting echo / feedback).
+      const gainNode = this.audioContext.createGain();
+      gainNode.gain.value = 0;
+
       this.processor.onaudioprocess = (event) => {
         if (this.socket?.readyState !== WebSocket.OPEN) {
           return;
@@ -94,15 +87,86 @@ export class SpeechRecognizer {
         }
         this.socket.send(output.buffer);
       };
+
       this.source.connect(this.processor);
-      this.processor.connect(this.audioContext.destination);
+      this.processor.connect(gainNode);
+      gainNode.connect(this.audioContext.destination);
     } catch (error) {
       this.stop();
       throw error;
     }
   }
 
+  /**
+   * Open a WebSocket and resolve only after `onopen` fires (or after a
+   * 5-second timeout).  During the in-flight period every error causes
+   * the returned promise to reject so that the caller can distinguish
+   * "connection failed" from runtime errors later on.
+   */
+  private connectWebSocket(): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      const socket = new WebSocket(websocketUrl("/ws/speech"));
+
+      // Some test mocks set readyState === OPEN synchronously.
+      if (socket.readyState === WebSocket.OPEN) {
+        this.attachRuntimeHandlers(socket);
+        resolve(socket);
+        return;
+      }
+
+      const timeout = setTimeout(() => {
+        socket.close();
+        reject(new Error("语音服务连接超时"));
+      }, 5000);
+
+      socket.onopen = () => {
+        clearTimeout(timeout);
+        this.attachRuntimeHandlers(socket);
+        resolve(socket);
+      };
+
+      socket.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error("语音连接失败"));
+      };
+    });
+  }
+
+  /**
+   * Replace the transient init-time handlers (onopen / onerror) with
+   * runtime handlers that forward state changes to the user callbacks.
+   */
+  private attachRuntimeHandlers(socket: WebSocket) {
+    socket.onmessage = (event) => {
+      const data = typeof event.data === "string" ? parseSocketJson(event.data) : null;
+      if (!data) {
+        this.callbacks.onError("语音识别响应格式异常");
+        this.stop();
+        return;
+      }
+      if (data.error) {
+        this.callbacks.onError(String(data.error));
+        this.stop();
+        return;
+      }
+      this.callbacks.onText(String(data.text ?? ""), Boolean(data.is_final));
+    };
+
+    socket.onerror = () => {
+      if (this.stopping) return;
+      this.callbacks.onError("语音连接失败");
+      this.stop();
+    };
+
+    socket.onclose = () => {
+      if (this.stopping) return;
+      this.callbacks.onError("语音连接已断开");
+      this.stop();
+    };
+  }
+
   stop() {
+    this.stopping = true;
     this.processor?.disconnect();
     this.source?.disconnect();
     void this.audioContext?.close();
@@ -113,6 +177,7 @@ export class SpeechRecognizer {
     this.audioContext = null;
     this.stream = null;
     this.socket = null;
+    this.stopping = false;
   }
 }
 
@@ -121,10 +186,10 @@ export class SpeechPlayer {
   private playbackId = 0;
   private pendingQueue: SpeechQueueItem[] = [];
   private drainingQueue = false;
-  private source: AudioBufferSourceNode | null = null;
-  private finishPlayback: (() => void) | null = null;
+  private scheduledEndTime = 0;
+  private scheduledSources: AudioBufferSourceNode[] = [];
   private ttsSocket: WebSocket | null = null;
-  private preFetchedAudio: { buffer: AudioBuffer; playbackId: number } | null = null;
+  private synthesisCache = new Map<string, Promise<AudioBuffer | null>>();
 
   private getAudioContext() {
     const AudioContextConstructor =
@@ -172,10 +237,9 @@ export class SpeechPlayer {
     if (!content) return;
     this.stop();
     const playbackId = this.playbackId;
-
     const buffer = await this.synthesize(content, playbackId);
     if (buffer) {
-      await this.playBuffer(buffer, playbackId);
+      await this.scheduleBuffer(buffer, playbackId);
     }
   }
 
@@ -212,64 +276,54 @@ export class SpeechPlayer {
     void this.drainQueue();
   }
 
+  private prefetchSynthesis(content: string, playbackId: number) {
+    const cacheKey = `${playbackId}:${content}`;
+    if (!this.synthesisCache.has(cacheKey)) {
+      this.synthesisCache.set(cacheKey, this.synthesize(content, playbackId));
+    }
+    return this.synthesisCache.get(cacheKey)!;
+  }
+
   private async drainQueue() {
     try {
-      while (this.pendingQueue.length > 0) {
-        const item = this.pendingQueue.shift();
-        if (!item) continue;
+      const playbackId = this.playbackId;
+      let nextPrefetch: Promise<AudioBuffer | null> | null = null;
 
-        if (item.playbackId !== this.playbackId) {
+      while (this.pendingQueue.length > 0 || nextPrefetch) {
+        if (this.playbackId !== playbackId) {
+          break;
+        }
+
+        const item = this.pendingQueue.shift();
+        if (!item) {
+          if (nextPrefetch) {
+            await nextPrefetch;
+          }
+          break;
+        }
+
+        if (item.playbackId !== playbackId) {
           item.resolveDone();
           continue;
         }
 
-        // Use pre-fetched audio if available, otherwise synthesize now.
-        let audio: AudioBuffer | null = null;
-        if (
-          this.preFetchedAudio &&
-          this.preFetchedAudio.playbackId === this.playbackId
-        ) {
-          audio = this.preFetchedAudio.buffer;
-          this.preFetchedAudio = null;
-        } else {
-          this.preFetchedAudio = null;
-          const result = await this.synthesize(item.content, item.playbackId).then(
-            (buffer): SpeechSynthesisResult => ({ status: "ready", buffer }),
-            (error: unknown): SpeechSynthesisResult => ({ status: "error", error }),
-          );
-          if (item.playbackId !== this.playbackId) {
+        try {
+          const buffer = nextPrefetch
+            ? await nextPrefetch
+            : await this.prefetchSynthesis(item.content, item.playbackId);
+          nextPrefetch = this.pendingQueue[0]
+            ? this.prefetchSynthesis(this.pendingQueue[0].content, item.playbackId)
+            : null;
+
+          if (!buffer || item.playbackId !== playbackId) {
             item.resolveDone();
             continue;
           }
-          if (result.status === "error") {
-            item.rejectDone(result.error);
-            continue;
-          }
-          audio = result.buffer;
-        }
 
-        // Pre-fetch the next segment while playing this one.
-        const nextItem = this.pendingQueue[0];
-        const preFetchPromise =
-          nextItem && nextItem.playbackId === this.playbackId
-            ? this.synthesize(nextItem.content, nextItem.playbackId).then(
-                (buffer) => {
-                  if (nextItem.playbackId === this.playbackId && buffer) {
-                    this.preFetchedAudio = { buffer, playbackId: nextItem.playbackId };
-                  }
-                },
-                () => undefined,
-              )
-            : null;
-
-        if (audio) {
-          await this.playBuffer(audio, item.playbackId);
-        }
-        item.resolveDone();
-
-        // Wait for pre-fetch to settle so the next iteration can use it.
-        if (preFetchPromise) {
-          await preFetchPromise;
+          await this.scheduleBuffer(buffer, item.playbackId);
+          item.resolveDone();
+        } catch (error) {
+          item.rejectDone(error);
         }
       }
     } finally {
@@ -346,25 +400,27 @@ export class SpeechPlayer {
     return buffer;
   }
 
-  private async playBuffer(buffer: AudioBuffer, playbackId: number) {
+  private async scheduleBuffer(buffer: AudioBuffer, playbackId: number) {
     if (playbackId !== this.playbackId) return;
     const context = this.getAudioContext();
     if (context.state === "suspended") {
       await context.resume();
     }
     if (playbackId !== this.playbackId) return;
+
+    const leadTime = 0.04;
+    const now = context.currentTime;
+    if (this.scheduledEndTime < now + leadTime) {
+      this.scheduledEndTime = now + leadTime;
+    }
+
     await new Promise<void>((resolve) => {
-      let finished = false;
       const source = context.createBufferSource();
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-        if (this.source === source) {
-          this.source = null;
-        }
-        if (this.finishPlayback === finish) {
-          this.finishPlayback = null;
-        }
+      const startAt = this.scheduledEndTime;
+      source.buffer = buffer;
+      source.connect(context.destination);
+      source.onended = () => {
+        this.scheduledSources = this.scheduledSources.filter((active) => active !== source);
         try {
           source.disconnect();
         } catch {
@@ -372,13 +428,9 @@ export class SpeechPlayer {
         }
         resolve();
       };
-
-      source.buffer = buffer;
-      source.connect(context.destination);
-      source.onended = finish;
-      this.finishPlayback = finish;
-      this.source = source;
-      source.start();
+      this.scheduledSources.push(source);
+      source.start(startAt);
+      this.scheduledEndTime = startAt + buffer.duration;
     });
   }
 
@@ -386,18 +438,23 @@ export class SpeechPlayer {
     this.playbackId += 1;
     const pendingItems = this.pendingQueue.splice(0);
     pendingItems.forEach((item) => item.resolveDone());
-    this.preFetchedAudio = null;
+    this.synthesisCache.clear();
+    this.scheduledEndTime = 0;
     this.ttsSocket?.close();
     this.ttsSocket = null;
-    try {
-      this.source?.stop();
-    } catch {
-      // The source may already have ended.
+    for (const source of this.scheduledSources) {
+      try {
+        source.stop();
+      } catch {
+        // The source may already have ended.
+      }
+      try {
+        source.disconnect();
+      } catch {
+        // The source may already be detached.
+      }
     }
-    this.finishPlayback?.();
-    this.finishPlayback = null;
-    this.source?.disconnect();
-    this.source = null;
+    this.scheduledSources = [];
   }
 
   destroy() {
